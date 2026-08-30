@@ -68,6 +68,9 @@
 // later from the web UI and are stored in /config.json from then on.
 const char* HA_URL_DEFAULT = "http://homeassistant.local:8123";
 
+// Timers-page preset buttons, in seconds: 1 / 5 / 10 / 15 / 30 min.
+const int DEFAULT_TIMER_PRESETS_SEC[5] = {60, 300, 600, 900, 1800};
+
 // Default device / hostname: "HAPanel" + the last 4 hex digits of the MAC,
 // so two fresh panels on the same network don't collide. Falls back to a
 // random 4-hex suffix if the efuse MAC reads back as zero.
@@ -474,8 +477,7 @@ void setDefaultConfig() {
   cfg.flashPulseCount = 5;
   cfg.flashBrightnessPct = 25;
 
-  const int defaultPresetsSec[5] = {60, 300, 600, 900, 1800}; // 1/5/10/15/30 min
-  for (int i = 0; i < 5; i++) cfg.timerPresetSec[i] = defaultPresetsSec[i];
+  for (int i = 0; i < 5; i++) cfg.timerPresetSec[i] = DEFAULT_TIMER_PRESETS_SEC[i];
 
   cfg.customPageOrder = false;
 
@@ -595,7 +597,6 @@ bool loadConfig() {
   cfg.flashBrightnessPct = constrain((int)(doc["flashBrightnessPct"] | 25), 1, 100);
 
   {
-    const int defaultPresetsSec[5] = {60, 300, 600, 900, 1800};
     JsonArray presetsSecArr = doc["timerPresetSec"].as<JsonArray>();
     JsonArray legacyMinArr = doc["timerPresetMin"].as<JsonArray>(); // pre-seconds-support exports
     for (int i = 0; i < 5; i++) {
@@ -604,9 +605,9 @@ bool loadConfig() {
       } else if (i < (int)legacyMinArr.size()) {
         cfg.timerPresetSec[i] = legacyMinArr[i].as<int>() * 60;
       } else {
-        cfg.timerPresetSec[i] = defaultPresetsSec[i];
+        cfg.timerPresetSec[i] = DEFAULT_TIMER_PRESETS_SEC[i];
       }
-      if (cfg.timerPresetSec[i] < 1) cfg.timerPresetSec[i] = defaultPresetsSec[i];
+      if (cfg.timerPresetSec[i] < 1) cfg.timerPresetSec[i] = DEFAULT_TIMER_PRESETS_SEC[i];
     }
   }
 
@@ -3106,6 +3107,8 @@ void handleRoot() {
     h += "</div>";
   }
   h += "<button class='primary' type='submit'>Save presets</button></form>";
+  h += "<form method='POST' action='/reset-timers' style='margin-top:8px' onsubmit=\"return confirm('Reset all 5 timer presets to 1/5/10/15/30 minutes?');\">";
+  h += "<button type='submit'>Reset presets to defaults</button></form>";
   h += "</section>";
 
   // ---- Backup & Restore --------------------------------------------
@@ -3499,6 +3502,15 @@ void handleSaveTimers() {
   saveConfig();
   pageDirty = true; // Timers page may be showing the old preset labels
 
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handleResetTimers() {
+  for (int i = 0; i < 5; i++) cfg.timerPresetSec[i] = DEFAULT_TIMER_PRESETS_SEC[i];
+  saveConfig();
+  pageDirty = true;
+  gSaveNotice = "Timer presets reset to defaults (1, 5, 10, 15, 30 min).";
   server.sendHeader("Location", "/");
   server.send(303);
 }
@@ -3939,6 +3951,7 @@ void setupWebServer() {
   server.on("/reboot", HTTP_POST, handleReboot);
   server.on("/save-flash", HTTP_POST, handleSaveFlash);
   server.on("/save-timers", HTTP_POST, handleSaveTimers);
+  server.on("/reset-timers", HTTP_POST, handleResetTimers);
   server.on("/page/add", HTTP_POST, handlePageAdd);
   server.on("/page/rename", HTTP_POST, handlePageRename);
   server.on("/page/delete", HTTP_POST, handlePageDelete);
