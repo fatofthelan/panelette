@@ -1580,8 +1580,13 @@ bool haFetchAndApplyConfig() {
   if (!doc["latitude"].isNull() && !doc["longitude"].isNull()) {
     cfg.weatherLat = doc["latitude"].as<float>();
     cfg.weatherLon = doc["longitude"].as<float>();
+    // Only seed the display name from HA when the user hasn't set their own
+    // - HA's "location_name" is the instance name (often "Home"), not a
+    // city, and it shouldn't clobber what the user typed on the Weather card.
     const char* ln = doc["location_name"];
-    if (ln && strlen(ln) > 0) strlcpy(cfg.weatherLocationName, ln, sizeof(cfg.weatherLocationName));
+    if (ln && strlen(ln) > 0 && strlen(cfg.weatherLocationName) == 0) {
+      strlcpy(cfg.weatherLocationName, ln, sizeof(cfg.weatherLocationName));
+    }
     weatherKnown = false;
     lastWeatherFetch = 0;
     changed = true;
@@ -2201,8 +2206,8 @@ void drawForecastPageFull() {
   }
 
   // "Current conditions" hero row, matching the layout of Home Assistant's
-  // own weather card: icon + condition + area name on the left, current
-  // temp + today's high/low on the right.
+  // own weather card: icon + condition + weather location on the left,
+  // current temp + today's high/low on the right.
   const int heroTop = HEADER_H;
   const int heroIconCx = 40;
   const int heroIconCy = heroTop + 38;
@@ -2213,7 +2218,7 @@ void drawForecastPageFull() {
   tft.setTextColor(COL_TEXT, COL_BG);
   uiDrawString(tft, weatherCodeLabel(weatherCurrentCode), 68, heroTop + 12, fontHeader());
   tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, cfg.pages[0].name, 68, heroTop + 40, fontStatusRow());
+  uiDrawFitted(tft, String(cfg.weatherLocationName), 68, heroTop + 40, SCREEN_W - 68 - 58, fontStatusRow());
 
   String curTemp = String((int)roundf(weatherCurrentTemp));
   tft.setTextDatum(TR_DATUM);
@@ -3011,9 +3016,9 @@ void handleRoot() {
   h += "</section>";
 
   h += "<section class='card'><h2>Weather</h2>";
-  h += "<div class='muted' style='margin-bottom:6px'>Location is imported from Home Assistant on save. Edit below to override it.</div>";
-  h += "<label>Location name</label>";
-  h += "<input name='weatherName' value='" + htmlEscape(cfg.weatherLocationName) + "' placeholder='e.g. Seattle, WA'>";
+  h += "<div class='muted' style='margin-bottom:6px'>Coordinates are imported from Home Assistant on save. Edit any field to override.</div>";
+  h += "<label>Location name (shown on the Forecast screen)</label>";
+  h += "<input name='weatherName' value='" + htmlEscape(cfg.weatherLocationName) + "' placeholder='e.g. Portland, OR'>";
   h += "<div class='grid2' style='margin-top:8px'>";
   h += "<div><label>Latitude</label><input name='weatherLat' value='" + String(cfg.weatherLat, 4) + "'></div>";
   h += "<div><label>Longitude</label><input name='weatherLon' value='" + String(cfg.weatherLon, 4) + "'></div>";
