@@ -304,21 +304,33 @@ int uiTextWidth(T& d, const String& text, int fontNum) {
   }
 }
 
-// Shortens text (dropping characters from the end) until it fits within
-// maxWidth at the given font. Layouts were pixel-tuned against the
-// Classic font's metrics - Free Fonts and Bold can run wider for the
-// same string, so labels that fit fine in Classic can overflow a tile's
-// rounded corners in the other typefaces. This keeps that from happening
-// regardless of which typeface ends up chosen, rather than hand-tuning
-// every label's length for each font.
+// Shortens text (dropping characters from the end, adding "...") until it
+// fits within maxWidth. Tries a smaller Classic font size first when
+// that's available, since showing the full word smaller beats showing a
+// truncated fragment at the original size - Free Fonts don't have a
+// smaller tile-scale tier to fall back to, so those go straight to
+// truncation. Draws the result directly rather than returning text for
+// a separate draw call, since the font actually used can change here.
 template<typename T>
-String uiFitText(T& d, const String& text, int maxWidth, int fontNum) {
-  if (uiTextWidth(d, text, fontNum) <= maxWidth) return text;
-  String truncated = text;
-  while (truncated.length() > 1 && uiTextWidth(d, truncated, fontNum) > maxWidth) {
-    truncated.remove(truncated.length() - 1);
+void uiDrawFitted(T& d, const String& text, int x, int y, int maxWidth, int preferredFont) {
+  bool classic = (strlen(cfg.uiTypeface) == 0) || strcmp(cfg.uiTypeface, "classic") == 0;
+  int useFont = preferredFont;
+
+  if (classic && preferredFont > 1 && uiTextWidth(d, text, useFont) > maxWidth) {
+    useFont = 1; // Classic has a genuinely smaller size to drop to; Free Fonts don't
   }
-  return truncated;
+
+  String fitted = text;
+  if (uiTextWidth(d, fitted, useFont) > maxWidth) {
+    const String ellipsis = "...";
+    int ellipsisW = uiTextWidth(d, ellipsis, useFont);
+    while (fitted.length() > 1 && uiTextWidth(d, fitted, useFont) + ellipsisW > maxWidth) {
+      fitted.remove(fitted.length() - 1);
+    }
+    fitted += ellipsis;
+  }
+
+  uiDrawString(d, fitted, x, y, useFont);
 }
 
 // =========================================================
@@ -349,10 +361,12 @@ const BulbColorEntry BULB_COLORS[] = {
 const int BULB_COLORS_COUNT = sizeof(BULB_COLORS) / sizeof(BULB_COLORS[0]);
 
 uint16_t resolveBulbColor() {
-  for (int i = 0; i < BULB_COLORS_COUNT; i++) {
-    if (strcmp(cfg.bulbColorKey, BULB_COLORS[i].key) == 0) return fixColor565(BULB_COLORS[i].normalHex);
-  }
-  return fixColor565(BULB_COLORS[0].normalHex); // "amber" fallback
+  // Picker UI removed a couple rounds back, but cfg.bulbColorKey wasn't
+  // reset at the time - if it was ever set to something other than
+  // amber (e.g. testing "Blue" before the picker was disabled), that
+  // stale value would keep being used with no way to change it back.
+  // Forcing amber here until the picker (or a replacement) comes back.
+  return fixColor565(BULB_COLORS[0].normalHex); // "amber"
 }
 
 void setDefaultConfig() {
@@ -1411,7 +1425,7 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
 
   sprTile.setTextDatum(TC_DATUM);
   sprTile.setTextColor(COL_DIM, bgColor);
-  uiDrawString(sprTile, uiFitText(sprTile, tl.label, w - 12, fontTile()), w / 2, 4, fontTile());
+  uiDrawFitted(sprTile, tl.label, w / 2, 4, w - 12, fontTile());
 
   const uint16_t warmColor = resolveBulbColor();
   int iconCx = wide ? w / 4 : w / 2;
@@ -1450,7 +1464,7 @@ void drawSliderSprite(int tileIdx, int slot, bool wide, int percent, bool force)
 
   sprTile.setTextDatum(TL_DATUM);
   sprTile.setTextColor(COL_DIM, COL_PANEL);
-  uiDrawString(sprTile, uiFitText(sprTile, tl.label, w - 50, fontTile()), 6, 4, fontTile());
+  uiDrawFitted(sprTile, tl.label, 6, 4, w - 50, fontTile());
 
   sprTile.setTextDatum(TR_DATUM);
   sprTile.setTextColor(COL_ACCENT, COL_PANEL);
