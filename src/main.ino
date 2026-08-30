@@ -1,22 +1,38 @@
 // =========================================================
-// HA Panel - Phase 1
+// HA Panel
 // Multi-page HA touch control panel for the CYD (ESP32-2432S028R)
 //
-// Implemented this phase:
+// Implemented:
 //   - Page/tile data model, stored as /config.json on LittleFS
 //   - 2 col x 3 row tile grid per page (1x1 and wide 1x2 tiles)
-//   - Swipe left/right between pages, footer page-dot nav
+//   - Swipe left/right between pages; footer nav shows a per-page-type
+//     icon (bulb / cloud / clock / gear). Default page order is Home,
+//     area pages, Forecast, Timers, Status - fully drag-reorderable in
+//     the web UI (Home stays first), or reset to the default.
 //   - Tile types: light (tap=toggle, hold+drag=brightness slider),
-//     switch (tap=toggle), sensor (read-only state)
-//   - Status page: network info, dark/light theme toggle, reboot
-//   - Web UI: device name, HA URL/token, add/remove pages,
-//     add/remove/reorder tiles per page, export config.json
+//     switch (tap=toggle), sensor (read-only state), scene / script /
+//     button (tap fires a service, brief "Sent" flash), weather, timer
+//   - Forecast page: 5-day weather (Open-Meteo, no API key)
+//   - Timers page: presets + custom time, optional light-flash on expiry
+//   - Status page: network + HA connection info (tap the HA row to
+//     re-test), dark/light theme toggle, reboot
+//   - Web UI (grouped into cards: Device / Home Assistant / Weather /
+//     Pages / Timers / Backup): device settings, HA URL/token, per-page
+//     hide toggle, add/remove pages and tiles, drag-to-reorder tiles and
+//     pages, import/export config.json
+//   - HA setup helpers (all HTTP-only, each falls back to manual entry):
+//       * mDNS discovery of the HA URL on boot
+//       * /api/config import (time zone, location) on Save
+//       * connection test - "Test" button in the web UI, HA row on the
+//         Status page
+//       * entity picker (datalist) in the tile forms, via /api/template
+//       * "Add from a Home Assistant area" - group-aware checklist
 //
-// Stubbed for Phase 2:
-//   - Forecast page (7-day weather) - placeholder only
-//   - Timers page - placeholder only
-//   - Config import via web UI
-//   - Captive-portal WiFi setup (not needed - manual per-device edit)
+// Deferred:
+//   - Captive-portal WiFi onboarding + prebuilt web-flasher (for a
+//     no-build-tools install path)
+//   - WebSocket live state updates (TLS handling + event-load concerns
+//     on this single-core, no-PSRAM hardware)
 // =========================================================
 
 #include <WiFi.h>
@@ -48,7 +64,35 @@
 // WiFi credentials live in include/secrets.h. HA URL/token can also be set
 // later from the web UI and are stored in /config.json from then on.
 const char* HA_URL_DEFAULT = "http://homeassistant.local:8123";
-const char* DEVICE_NAME_DEFAULT = "hapanel";
+
+// Default device / hostname: "HAPanel" + the last 4 hex digits of the MAC,
+// so two fresh panels on the same network don't collide. Falls back to a
+// random 4-hex suffix if the efuse MAC reads back as zero.
+void makeDefaultDeviceName(char* out, size_t n) {
+  uint16_t suffix = (uint16_t)((ESP.getEfuseMac() >> 32) & 0xFFFF);
+  if (suffix == 0) suffix = (uint16_t)(esp_random() & 0xFFFF);
+  snprintf(out, n, "HAPanel%04X", suffix);
+}
+
+// Keep only characters valid in a hostname / mDNS name; spaces and
+// underscores become hyphens, leading/trailing hyphens trimmed. Empty
+// result falls back to a generated default.
+String sanitizeHostname(const String& in) {
+  String out;
+  for (size_t i = 0; i < in.length(); i++) {
+    char c = in[i];
+    if (isalnum((unsigned char)c) || c == '-') out += c;
+    else if (c == ' ' || c == '_') out += '-';
+  }
+  while (out.length() && out[0] == '-') out.remove(0, 1);
+  while (out.length() && out[out.length() - 1] == '-') out.remove(out.length() - 1);
+  if (out.length() == 0) {
+    char buf[24];
+    makeDefaultDeviceName(buf, sizeof(buf));
+    out = buf;
+  }
+  return out;
+}
 
 // =========================================================
 // DISPLAY / TOUCH (known-good pins for the CYD ESP32-2432S028R)
@@ -370,7 +414,7 @@ uint16_t resolveBulbColor() {
 }
 
 void setDefaultConfig() {
-  strlcpy(cfg.deviceName, DEVICE_NAME_DEFAULT, sizeof(cfg.deviceName));
+  makeDefaultDeviceName(cfg.deviceName, sizeof(cfg.deviceName));
   strlcpy(cfg.haUrl, HA_URL_DEFAULT, sizeof(cfg.haUrl));
   cfg.haToken[0] = '\0';
   cfg.darkTheme = true;
@@ -381,7 +425,6 @@ void setDefaultConfig() {
   strlcpy(cfg.bulbColorKey, "amber", sizeof(cfg.bulbColorKey));
   strlcpy(cfg.timezone, "us_pacific", sizeof(cfg.timezone));
 
-  cfg.weatherLocationAuto = true;
   const TzEntry& defaultTz = findTzEntry(cfg.timezone);
   cfg.weatherLat = defaultTz.lat;
   cfg.weatherLon = defaultTz.lon;
@@ -396,31 +439,81 @@ void setDefaultConfig() {
   const int defaultPresetsSec[5] = {60, 300, 600, 900, 1800}; // 1/5/10/15/30 min
   for (int i = 0; i < 5; i++) cfg.timerPresetSec[i] = defaultPresetsSec[i];
 
+  cfg.customPageOrder = false;
+
   cfg.pageCount = 4;
 
-  strlcpy(cfg.pages[0].id, "home", sizeof(cfg.pages[0].id));
-  strlcpy(cfg.pages[0].name, "Home", sizeof(cfg.pages[0].name));
-  strlcpy(cfg.pages[0].type, "home", sizeof(cfg.pages[0].type));
-  cfg.pages[0].deletable = false;
-  cfg.pages[0].tileCount = 0;
+  const char* defIds[4]   = {"home", "forecast", "timers", "status"};
+  const char* defNames[4] = {"Home", "Forecast", "Timers", "Status"};
+  for (int i = 0; i < 4; i++) {
+    strlcpy(cfg.pages[i].id, defIds[i], sizeof(cfg.pages[i].id));
+    strlcpy(cfg.pages[i].name, defNames[i], sizeof(cfg.pages[i].name));
+    strlcpy(cfg.pages[i].type, defIds[i], sizeof(cfg.pages[i].type)); // id == type for the built-ins
+    cfg.pages[i].deletable = false;
+    cfg.pages[i].hidden = false;
+    cfg.pages[i].tileCount = 0;
+  }
+}
 
-  strlcpy(cfg.pages[1].id, "forecast", sizeof(cfg.pages[1].id));
-  strlcpy(cfg.pages[1].name, "Forecast", sizeof(cfg.pages[1].name));
-  strlcpy(cfg.pages[1].type, "forecast", sizeof(cfg.pages[1].type));
-  cfg.pages[1].deletable = false;
-  cfg.pages[1].tileCount = 0;
+// Whether a page can be hidden from the on-device footer/swipe nav. Home
+// is the fixed first page; Status is the only on-device route to reboot /
+// theme / HA test, so neither can be hidden.
+bool pageCanHide(const char* type) {
+  return strcmp(type, "home") != 0 && strcmp(type, "status") != 0;
+}
 
-  strlcpy(cfg.pages[2].id, "timers", sizeof(cfg.pages[2].id));
-  strlcpy(cfg.pages[2].name, "Timers", sizeof(cfg.pages[2].name));
-  strlcpy(cfg.pages[2].type, "timers", sizeof(cfg.pages[2].type));
-  cfg.pages[2].deletable = false;
-  cfg.pages[2].tileCount = 0;
+// Footer / swipe order: Home first, then area (control) pages in the order
+// they were added, then Forecast, Timers, and Status last. Everything -
+// footer icons, page dots, swipe nav - follows cfg.pages[] order, so this
+// is enforced in the data model rather than per-view. Home keeps index 0
+// (several call sites treat cfg.pages[0] as the home page).
+int pageSortKey(const char* type) {
+  if (strcmp(type, "home") == 0) return 0;
+  if (strcmp(type, "forecast") == 0) return 2;
+  if (strcmp(type, "timers") == 0) return 3;
+  if (strcmp(type, "status") == 0) return 4;
+  return 1; // "area" and any future control-page type
+}
 
-  strlcpy(cfg.pages[3].id, "status", sizeof(cfg.pages[3].id));
-  strlcpy(cfg.pages[3].name, "Status", sizeof(cfg.pages[3].name));
-  strlcpy(cfg.pages[3].type, "status", sizeof(cfg.pages[3].type));
-  cfg.pages[3].deletable = false;
-  cfg.pages[3].tileCount = 0;
+void sortPages() {
+  // stable insertion sort (pageCount is <= MAX_PAGES = 8)
+  for (int i = 1; i < cfg.pageCount; i++) {
+    PageConfig tmp = cfg.pages[i];
+    int key = pageSortKey(tmp.type);
+    int j = i - 1;
+    while (j >= 0 && pageSortKey(cfg.pages[j].type) > key) {
+      cfg.pages[j + 1] = cfg.pages[j];
+      j--;
+    }
+    cfg.pages[j + 1] = tmp;
+  }
+}
+
+// --- Visible-page navigation (hidden pages are skipped on the device) ---
+int visiblePageCount() {
+  int n = 0;
+  for (int i = 0; i < cfg.pageCount; i++) if (!cfg.pages[i].hidden) n++;
+  return n;
+}
+
+// 0-based position of a page among the visible ones, or -1 if it's hidden.
+int visiblePosOf(int arrIdx) {
+  int p = 0;
+  for (int i = 0; i < cfg.pageCount; i++) {
+    if (i == arrIdx) return cfg.pages[i].hidden ? -1 : p;
+    if (!cfg.pages[i].hidden) p++;
+  }
+  return -1;
+}
+
+int nextVisiblePage(int arrIdx) {
+  for (int i = arrIdx + 1; i < cfg.pageCount; i++) if (!cfg.pages[i].hidden) return i;
+  return arrIdx;
+}
+
+int prevVisiblePage(int arrIdx) {
+  for (int i = arrIdx - 1; i >= 0; i--) if (!cfg.pages[i].hidden) return i;
+  return arrIdx;
 }
 
 // =========================================================
@@ -436,7 +529,8 @@ bool loadConfig() {
   f.close();
   if (err) return false;
 
-  strlcpy(cfg.deviceName, doc["deviceName"] | DEVICE_NAME_DEFAULT, sizeof(cfg.deviceName));
+  strlcpy(cfg.deviceName, doc["deviceName"] | "", sizeof(cfg.deviceName));
+  if (strlen(cfg.deviceName) == 0) makeDefaultDeviceName(cfg.deviceName, sizeof(cfg.deviceName));
   strlcpy(cfg.haUrl, doc["haUrl"] | HA_URL_DEFAULT, sizeof(cfg.haUrl));
   strlcpy(cfg.haToken, doc["haToken"] | "", sizeof(cfg.haToken));
   cfg.darkTheme = doc["darkTheme"] | true;
@@ -448,7 +542,6 @@ bool loadConfig() {
   strlcpy(cfg.timezone, doc["timezone"] | "us_pacific", sizeof(cfg.timezone));
   strlcpy(cfg.timezone, sanitizeTimezoneKey(cfg.timezone).c_str(), sizeof(cfg.timezone));
 
-  cfg.weatherLocationAuto = doc["weatherLocationAuto"] | true;
   const TzEntry& tzForDefault = findTzEntry(cfg.timezone);
   cfg.weatherLat = doc["weatherLat"] | tzForDefault.lat;
   cfg.weatherLon = doc["weatherLon"] | tzForDefault.lon;
@@ -476,6 +569,8 @@ bool loadConfig() {
     }
   }
 
+  cfg.customPageOrder = doc["customPageOrder"] | false;
+
   JsonArray pagesArr = doc["pages"].as<JsonArray>();
   cfg.pageCount = 0;
   for (JsonObject p : pagesArr) {
@@ -485,6 +580,7 @@ bool loadConfig() {
     strlcpy(pg.name, p["name"] | "Page", sizeof(pg.name));
     strlcpy(pg.type, p["type"] | "area", sizeof(pg.type));
     pg.deletable = p["deletable"] | true;
+    pg.hidden = (p["hidden"] | false) && pageCanHide(pg.type);
     pg.tileCount = 0;
 
     JsonArray tilesArr = p["tiles"].as<JsonArray>();
@@ -502,6 +598,7 @@ bool loadConfig() {
   }
 
   if (cfg.pageCount == 0) return false;
+  if (!cfg.customPageOrder) sortPages(); // otherwise keep the user's drag order
   return true;
 }
 
@@ -516,7 +613,6 @@ void buildConfigJson(JsonDocument& doc) {
   doc["uiBoldText"] = cfg.uiBoldText;
   doc["bulbColorKey"] = cfg.bulbColorKey;
   doc["timezone"] = cfg.timezone;
-  doc["weatherLocationAuto"] = cfg.weatherLocationAuto;
   doc["weatherLat"] = cfg.weatherLat;
   doc["weatherLon"] = cfg.weatherLon;
   doc["weatherLocationName"] = cfg.weatherLocationName;
@@ -528,6 +624,7 @@ void buildConfigJson(JsonDocument& doc) {
 
   JsonArray presetsOut = doc.createNestedArray("timerPresetSec");
   for (int i = 0; i < 5; i++) presetsOut.add(cfg.timerPresetSec[i]);
+  doc["customPageOrder"] = cfg.customPageOrder;
 
   JsonArray pagesArr = doc.createNestedArray("pages");
   for (int i = 0; i < cfg.pageCount; i++) {
@@ -537,6 +634,7 @@ void buildConfigJson(JsonDocument& doc) {
     p["name"] = pg.name;
     p["type"] = pg.type;
     p["deletable"] = pg.deletable;
+    p["hidden"] = pg.hidden;
 
     JsonArray tilesArr = p.createNestedArray("tiles");
     for (int j = 0; j < pg.tileCount; j++) {
@@ -1070,6 +1168,68 @@ void drawClockIcon(T& d, int cx, int cy, uint16_t iconColor, float scale = 1.0f)
 }
 
 // =========================================================
+// PAGE-TYPE HEADER ICONS
+// =========================================================
+// Outline-only, single-color icons (same visual weight as drawClockIcon
+// above) so they render correctly in both themes with one color. Sized so
+// scale 1.0 is ~24px tall, matching the clock icon; the header calls them
+// smaller. Templated on the drawing target like the weather/clock icons.
+
+template<typename T>
+void drawNavBulbIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f) {
+  auto S = [scale](int v) { return (int)roundf(v * scale); };
+  int r = S(8);
+  d.drawCircle(cx, cy - S(2), r, c); // glass
+  // screw base - a few narrowing rungs under the glass
+  d.drawFastHLine(cx - S(4), cy + S(6), S(8), c);
+  d.drawFastHLine(cx - S(4), cy + S(8), S(8), c);
+  d.drawFastHLine(cx - S(3), cy + S(10), S(6), c);
+  d.drawLine(cx - S(5), cy + S(4), cx - S(4), cy + S(6), c);
+  d.drawLine(cx + S(5), cy + S(4), cx + S(4), cy + S(6), c);
+}
+
+template<typename T>
+void drawCloudIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f) {
+  auto S = [scale](int v) { return (int)roundf(v * scale); };
+  d.drawCircle(cx - S(5), cy + S(1), S(5), c);
+  d.drawCircle(cx + S(4), cy + S(1), S(6), c);
+  d.drawCircle(cx, cy - S(3), S(5), c);
+  d.drawFastHLine(cx - S(9), cy + S(6), S(19), c); // flat base ties the puffs together
+}
+
+template<typename T>
+void drawGearIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f) {
+  auto S = [scale](int v) { return (int)roundf(v * scale); };
+  int r = S(6);
+  d.drawCircle(cx, cy, r, c);       // body
+  d.drawCircle(cx, cy, S(2), c);    // hub hole
+  // 8 teeth as short thick spokes, using fixed unit vectors (no trig)
+  static const float dirs[8][2] = {
+    {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+    {0.7f, 0.7f}, {-0.7f, 0.7f}, {0.7f, -0.7f}, {-0.7f, -0.7f}
+  };
+  int tooth = S(3);
+  for (int i = 0; i < 8; i++) {
+    int x1 = cx + (int)roundf(dirs[i][0] * r);
+    int y1 = cy + (int)roundf(dirs[i][1] * r);
+    int x2 = cx + (int)roundf(dirs[i][0] * (r + tooth));
+    int y2 = cy + (int)roundf(dirs[i][1] * (r + tooth));
+    d.drawLine(x1, y1, x2, y2, c);
+    d.drawLine(x1 + 1, y1, x2 + 1, y2, c);
+  }
+}
+
+// Dispatches on PageConfig::type. "home" and user-added "area" pages get
+// the bulb; unknown types fall back to the bulb too.
+template<typename T>
+void drawPageTypeIcon(T& d, const char* type, int cx, int cy, uint16_t c, float scale = 1.0f) {
+  if (strcmp(type, "forecast") == 0)     drawCloudIcon(d, cx, cy, c, scale);
+  else if (strcmp(type, "timers") == 0)  drawClockIcon(d, cx, cy, c, scale);
+  else if (strcmp(type, "status") == 0)  drawGearIcon(d, cx, cy, c, scale);
+  else                                   drawNavBulbIcon(d, cx, cy, c, scale);
+}
+
+// =========================================================
 // TOUCH READ
 // =========================================================
 bool readTouchXY(int& x, int& y) {
@@ -1147,6 +1307,36 @@ bool haSendBrightness(const char* entityId, int pct) {
   return code == 200 || code == 201;
 }
 
+// One-shot "activate" for stateless tiles (scene / script / button). Picks
+// the right service from the entity's domain.
+bool haActivate(const char* entityId) {
+  if (!haConfigured() || WiFi.status() != WL_CONNECTED) return false;
+  String domain = entityDomain(entityId);
+  if (domain.length() == 0) return false;
+
+  String service;
+  if (domain == "scene") service = "scene/turn_on";
+  else if (domain == "script") service = "script/turn_on";
+  else if (domain == "button" || domain == "input_button") service = domain + "/press";
+  else service = domain + "/turn_on"; // best effort for anything else
+
+  WiFiClient client;
+  HTTPClient http;
+  String url = String(cfg.haUrl) + "/api/services/" + service;
+  if (!http.begin(client, url)) return false;
+  http.addHeader("Authorization", "Bearer " + String(cfg.haToken));
+  http.addHeader("Content-Type", "application/json");
+
+  StaticJsonDocument<128> doc;
+  doc["entity_id"] = entityId;
+  String body;
+  serializeJson(doc, body);
+
+  int code = http.POST(body);
+  http.end();
+  return code == 200 || code == 201;
+}
+
 // Fetches state (+ brightness, when present) for any entity into rt.
 bool haFetchEntityState(const char* entityId, TileRuntime& rt) {
   if (!haConfigured() || WiFi.status() != WL_CONNECTED) return false;
@@ -1187,6 +1377,208 @@ bool haFetchEntityState(const char* entityId, TileRuntime& rt) {
   }
 
   return true;
+}
+
+// =========================================================
+// HA CONNECTION STATE / DISCOVERY / CONFIG SYNC
+// =========================================================
+// enum HaConnState lives in config_types.h (auto-prototype ordering).
+HaConnState haConnState = HA_CONN_UNKNOWN;
+unsigned long lastHaCheckMs = 0;
+const unsigned long HA_CHECK_INTERVAL_MS = 60UL * 1000UL;
+
+const char* haConnLabel(HaConnState s) {
+  switch (s) {
+    case HA_CONN_OK:           return "Connected";
+    case HA_CONN_AUTH_FAIL:    return "Auth failed";
+    case HA_CONN_UNREACHABLE:  return "Unreachable";
+    case HA_CONN_UNCONFIGURED: return "Not set up";
+    default:                   return "Checking...";
+  }
+}
+
+// GET /api/ with the saved token - HA's lightweight "is the API alive and
+// is this token valid" probe. Separates auth failure from unreachable so
+// the UI can point the user at the right field.
+HaConnState haProbeConnection() {
+  if (strlen(cfg.haUrl) == 0 || strlen(cfg.haToken) == 0) return HA_CONN_UNCONFIGURED;
+  if (WiFi.status() != WL_CONNECTED) return HA_CONN_UNREACHABLE;
+
+  WiFiClient client;
+  HTTPClient http;
+  String url = String(cfg.haUrl) + "/api/";
+  if (!http.begin(client, url)) return HA_CONN_UNREACHABLE;
+  http.addHeader("Authorization", "Bearer " + String(cfg.haToken));
+  http.setConnectTimeout(3000);
+  http.setTimeout(4000);
+  int code = http.GET();
+  http.end();
+
+  if (code == 200) return HA_CONN_OK;
+  if (code == 401 || code == 403) return HA_CONN_AUTH_FAIL;
+  return HA_CONN_UNREACHABLE;
+}
+
+// Called from loop(). Re-probes on a slow interval; only forces a redraw
+// when the state changes while the Status page is showing.
+void ensureHaCheck() {
+  if (haConnState != HA_CONN_UNKNOWN && millis() - lastHaCheckMs < HA_CHECK_INTERVAL_MS) return;
+  lastHaCheckMs = millis();
+  HaConnState s = haProbeConnection();
+  if (s != haConnState) {
+    haConnState = s;
+    if (strcmp(cfg.pages[currentPageIndex].type, "status") == 0) pageDirty = true;
+  }
+}
+
+// Maps HA's IANA time-zone name (e.g. "America/Los_Angeles") to this
+// project's own short tz key. Returns "" when we carry no matching zone -
+// the caller then leaves the user's setting alone.
+String tzKeyFromIana(const String& iana) {
+  struct { const char* iana; const char* key; } M[] = {
+    {"America/Los_Angeles", "us_pacific"}, {"America/Vancouver", "us_pacific"},
+    {"America/Denver", "us_mountain"},     {"America/Edmonton", "us_mountain"},
+    {"America/Phoenix", "us_arizona"},
+    {"America/Chicago", "us_central"},     {"America/Winnipeg", "us_central"},
+    {"America/New_York", "us_eastern"},    {"America/Toronto", "us_eastern"},
+    {"America/Anchorage", "alaska"},
+    {"Pacific/Honolulu", "hawaii"},
+    {"UTC", "utc"}, {"Etc/UTC", "utc"},
+    {"Europe/London", "uk"}, {"Europe/Dublin", "uk"},
+    {"Europe/Berlin", "europe_central"},   {"Europe/Paris", "europe_central"},
+    {"Europe/Madrid", "europe_central"},    {"Europe/Rome", "europe_central"},
+    {"Europe/Amsterdam", "europe_central"}, {"Europe/Brussels", "europe_central"},
+    {"Asia/Kolkata", "india"}, {"Asia/Calcutta", "india"},
+    {"Asia/Tokyo", "asia_tokyo"},
+    {"Australia/Sydney", "australia_sydney"}, {"Australia/Melbourne", "australia_sydney"},
+  };
+  for (auto& m : M) if (iana == m.iana) return m.key;
+  return "";
+}
+
+// GET /api/config after a good token save. Uses a deserialization filter
+// because the full payload (component list) is large. Applies the time
+// zone (mapped to our key set) and the exact lat/lon + name, switching
+// weather off "auto" since HA's coordinates beat a tz-derived city centre.
+// Any HTTP or parse failure leaves every setting untouched.
+bool haFetchAndApplyConfig() {
+  if (strlen(cfg.haUrl) == 0 || strlen(cfg.haToken) == 0) return false;
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  WiFiClient client;
+  HTTPClient http;
+  String url = String(cfg.haUrl) + "/api/config";
+  if (!http.begin(client, url)) return false;
+  http.addHeader("Authorization", "Bearer " + String(cfg.haToken));
+  http.setConnectTimeout(3000);
+  http.setTimeout(4000);
+  int code = http.GET();
+  if (code != 200) { http.end(); return false; }
+  String body = http.getString();
+  http.end();
+
+  StaticJsonDocument<192> filter;
+  filter["time_zone"] = true;
+  filter["latitude"] = true;
+  filter["longitude"] = true;
+  filter["location_name"] = true;
+
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) return false;
+
+  bool changed = false;
+
+  const char* tz = doc["time_zone"];
+  if (tz) {
+    String key = tzKeyFromIana(String(tz));
+    if (key.length() > 0 && key != cfg.timezone) {
+      strlcpy(cfg.timezone, key.c_str(), sizeof(cfg.timezone));
+      applyTimezone();
+      changed = true;
+    }
+  }
+
+  if (!doc["latitude"].isNull() && !doc["longitude"].isNull()) {
+    cfg.weatherLat = doc["latitude"].as<float>();
+    cfg.weatherLon = doc["longitude"].as<float>();
+    const char* ln = doc["location_name"];
+    if (ln && strlen(ln) > 0) strlcpy(cfg.weatherLocationName, ln, sizeof(cfg.weatherLocationName));
+    weatherKnown = false;
+    lastWeatherFetch = 0;
+    changed = true;
+  }
+
+  return changed;
+}
+
+// Best-effort LAN discovery of HA via its zeroconf advert
+// (_home-assistant._tcp). Only used to *suggest* a URL when none is set -
+// never overrides a saved value. Many networks block mDNS, so a failure
+// here is normal and silent.
+bool discoverHaUrl(String& out) {
+  int n = MDNS.queryService("home-assistant", "tcp");
+  if (n <= 0) return false;
+
+  IPAddress ip = MDNS.IP(0);
+  uint16_t port = MDNS.port(0);
+  if (ip == IPAddress((uint32_t)0)) return false;
+  if (port == 0) port = 8123;
+  out = "http://" + ip.toString() + ":" + String(port);
+  return true;
+}
+
+// POST /api/template - renders a Jinja template server-side and returns the
+// text. Used for entity/area discovery so the ESP32 never has to hold or
+// parse HA's full state list; callers keep templates to short "id|name"
+// lines. Returns false (out untouched) on any HTTP/parse failure.
+bool haRenderTemplate(const String& tmpl, String& out) {
+  if (strlen(cfg.haUrl) == 0 || strlen(cfg.haToken) == 0) return false;
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  WiFiClient client;
+  HTTPClient http;
+  String url = String(cfg.haUrl) + "/api/template";
+  if (!http.begin(client, url)) return false;
+  http.addHeader("Authorization", "Bearer " + String(cfg.haToken));
+  http.addHeader("Content-Type", "application/json");
+  http.setConnectTimeout(3000);
+  http.setTimeout(6000);
+
+  DynamicJsonDocument doc(tmpl.length() + 128);
+  doc["template"] = tmpl;
+  String reqBody;
+  serializeJson(doc, reqBody);
+
+  int code = http.POST(reqBody);
+  if (code != 200) { http.end(); return false; }
+  out = http.getString();
+  http.end();
+  return true;
+}
+
+// entity_id / area_id fragments we splice into a template must be plain
+// slugs - reject anything else rather than build a broken template.
+bool isSafeSlug(const String& s) {
+  if (s.length() == 0 || s.length() > 64) return false;
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (!(isalnum((unsigned char)c) || c == '_' || c == '-')) return false;
+  }
+  return true;
+}
+
+// "light.office_ceiling" -> "Office Ceiling" - fallback tile label when HA
+// gives us no friendly name.
+String prettyFromEntityId(const String& eid) {
+  int dot = eid.indexOf('.');
+  String s = dot >= 0 ? eid.substring(dot + 1) : eid;
+  s.replace('_', ' ');
+  bool cap = true;
+  for (size_t i = 0; i < s.length(); i++) {
+    if (cap && isalpha((unsigned char)s[i])) { s[i] = toupper(s[i]); cap = false; }
+    else if (s[i] == ' ') cap = true;
+  }
+  return s;
 }
 
 // =========================================================
@@ -1283,6 +1675,12 @@ void drawSwitchIcon(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t onColor)
   spr.drawCircle(knobX, cy, 7, COL_STROKE);
 }
 
+// Stateless "activate" tiles (scene / script / button): a filled play
+// triangle, tinted with the accent while the post-tap flash is showing.
+void drawActionIcon(TFT_eSprite& spr, int cx, int cy, uint16_t color) {
+  spr.fillTriangle(cx - 6, cy - 8, cx - 6, cy + 8, cx + 8, cy, color);
+}
+
 void makeSpriteCard(TFT_eSprite& spr, int w, int h, int fillColorOverride = -1) {
   uint16_t fillColor = (fillColorOverride >= 0) ? (uint16_t)fillColorOverride : COL_PANEL;
   spr.deleteSprite();
@@ -1372,6 +1770,12 @@ void drawWeatherTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, b
   pushSpriteAndDelete(sprTile, x, y);
 }
 
+// Post-tap "Sent" flash for a scene/script/button tile. -1 page = none.
+int actionFlashPage = -1;
+int actionFlashTile = -1;
+unsigned long actionFlashStartMs = 0;
+const unsigned long ACTION_FLASH_MS = 550;
+
 void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   if (slot < 0) return;
   PageConfig& pg = cfg.pages[currentPageIndex];
@@ -1390,6 +1794,32 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   }
   if (strcmp(tl.type, "timer") == 0) {
     drawTimerTileSprite(tileIdx, x, y, w, h, wide, force);
+    return;
+  }
+
+  bool isAction = (strcmp(tl.type, "scene") == 0 || strcmp(tl.type, "script") == 0 ||
+                   strcmp(tl.type, "button") == 0);
+  if (isAction) {
+    bool flashing = (actionFlashPage == currentPageIndex && actionFlashTile == tileIdx);
+    String combined = String("ACT|") + tl.label + "|" + (flashing ? "1" : "0") + "|" + String(COL_PANEL);
+    if (!force && combined == rt.cacheKey) return;
+    rt.cacheKey = combined;
+
+    uint16_t bg = flashing ? COL_PANEL_LIT : COL_PANEL;
+    makeSpriteCard(sprTile, w, h, flashing ? (int)COL_PANEL_LIT : -1);
+
+    sprTile.setTextDatum(TC_DATUM);
+    sprTile.setTextColor(COL_DIM, bg);
+    uiDrawFitted(sprTile, tl.label, w / 2, 4, w - 12, fontTile());
+
+    drawActionIcon(sprTile, wide ? w / 4 : w / 2, 38, flashing ? COL_ACCENT : COL_DIM);
+
+    sprTile.setTextDatum(MC_DATUM);
+    sprTile.setTextColor(flashing ? COL_TEXT : COL_DIM, bg);
+    uiDrawString(sprTile, flashing ? "Sent" : (strlen(tl.entityId) == 0 ? "Unset" : "Tap"), w / 2, h - 12, fontTile());
+    sprTile.setTextDatum(TL_DATUM);
+
+    pushSpriteAndDelete(sprTile, x, y);
     return;
   }
 
@@ -1513,22 +1943,23 @@ void drawHeader(bool force) {
   int hFont = fontHeader();
   int titleY = (hFont == 4) ? 4 : 9;
 
-  if (force) {
-    tft.fillRect(0, 0, SCREEN_W, HEADER_H, COL_BG);
-    tft.drawFastHLine(0, HEADER_H - 1, SCREEN_W, COL_STROKE);
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(COL_TEXT, COL_BG);
-    uiDrawString(tft, pg.name, 8, titleY, hFont);
-    lastHeaderTimeText = "";
-  }
-
   // 12-hour text ("11:32 PM") needs a bit more room than 24-hour ("23:32"),
-  // and font 4 needs more room than font 2 for the same text.
+  // and font 4 needs more room than font 2 for the same text. Computed up
+  // front so the title can be width-fitted into the space that's left.
   int clockAreaW;
   if (hFont == 4) {
     clockAreaW = cfg.use12Hour ? 132 : 84;
   } else {
     clockAreaW = cfg.use12Hour ? 100 : 62;
+  }
+
+  if (force) {
+    tft.fillRect(0, 0, SCREEN_W, HEADER_H, COL_BG);
+    tft.drawFastHLine(0, HEADER_H - 1, SCREEN_W, COL_STROKE);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(COL_TEXT, COL_BG);
+    uiDrawFitted(tft, pg.name, 8, titleY, SCREEN_W - clockAreaW - 12, hFont);
+    lastHeaderTimeText = "";
   }
 
   if (force || timeText != lastHeaderTimeText) {
@@ -1541,13 +1972,18 @@ void drawHeader(bool force) {
   }
 }
 
+// Footer slot for a page. Slots are divided among the VISIBLE pages only;
+// a hidden page gets a zero-width off-screen rect so it's never hit-tested
+// or drawn.
 void getFooterDotRect(int pageIdx, int& x, int& y, int& w, int& h) {
-  int count = cfg.pageCount;
-  int spacing = SCREEN_W / count;
-  x = pageIdx * spacing;
+  int count = visiblePageCount();
+  int vp = visiblePosOf(pageIdx);
   y = SCREEN_H - FOOTER_H;
-  w = spacing;
   h = FOOTER_H;
+  if (vp < 0 || count <= 0) { x = -100; w = 0; return; }
+  int spacing = SCREEN_W / count;
+  x = vp * spacing;
+  w = spacing;
 }
 
 void drawFooter(bool force) {
@@ -1556,17 +1992,14 @@ void drawFooter(bool force) {
   tft.fillRect(0, SCREEN_H - FOOTER_H, SCREEN_W, FOOTER_H, COL_BG);
   tft.drawFastHLine(0, SCREEN_H - FOOTER_H, SCREEN_W, COL_STROKE);
 
+  // Per-page-type icon per visible nav slot (bulb / cloud / clock / gear):
+  // accent for the current page, dim otherwise.
   for (int i = 0; i < cfg.pageCount; i++) {
+    if (cfg.pages[i].hidden) continue;
     int x, y, w, h;
     getFooterDotRect(i, x, y, w, h);
-    int cx = x + w / 2;
-    int cy = y + h / 2;
-
-    if (i == currentPageIndex) {
-      tft.fillCircle(cx, cy, 5, COL_ACCENT);
-    } else {
-      tft.drawCircle(cx, cy, 4, COL_DIM);
-    }
+    drawPageTypeIcon(tft, cfg.pages[i].type, x + w / 2, y + h / 2,
+                     i == currentPageIndex ? COL_ACCENT : COL_DIM, 0.6f);
   }
 }
 
@@ -1594,8 +2027,9 @@ void drawGridBackground() {
 // out of sync with each other.
 const int STATUS_INFO_Y0 = HEADER_H + 14;                          // 48
 const int STATUS_ROW_H = 22;
+const int STATUS_HA_ROW_Y = STATUS_INFO_Y0 + 4 * STATUS_ROW_H;     // 136 - WiFi/IP/Signal/Host then HA
 const int STATUS_THEME_BTN_X = 12, STATUS_THEME_BTN_W = 216, STATUS_BTN_H = 34;
-const int STATUS_THEME_BTN_Y = STATUS_INFO_Y0 + 3 * STATUS_ROW_H + 24;
+const int STATUS_THEME_BTN_Y = STATUS_INFO_Y0 + 4 * STATUS_ROW_H + 26; // clears 5 info rows: WiFi/IP/Signal/Host/HA
 const int STATUS_REBOOT_BTN_Y = STATUS_THEME_BTN_Y + STATUS_BTN_H + 10;
 
 void drawStatusPageFull() {
@@ -1629,6 +2063,17 @@ void drawStatusPageFull() {
   uiDrawString(tft, "Host", 12, y, rowFont);
   tft.setTextColor(COL_TEXT, COL_BG);
   uiDrawString(tft, String(cfg.deviceName) + ".local", 80, y, rowFont);
+  y += STATUS_ROW_H;
+
+  tft.setTextColor(COL_DIM, COL_BG);
+  uiDrawString(tft, "HA", 12, y, rowFont);
+  tft.setTextColor(COL_TEXT, COL_BG);
+  uiDrawString(tft, haConnLabel(haConnState), 80, y, rowFont);
+  // Right-aligned hint: this row is tappable to force an immediate re-test.
+  tft.setTextDatum(TR_DATUM);
+  tft.setTextColor(COL_DIM, COL_BG);
+  uiDrawString(tft, "tap to test", SCREEN_W - 12, y, 1);
+  tft.setTextDatum(TL_DATUM);
 
   // Theme toggle button
   tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_THEME_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_PANEL);
@@ -1851,6 +2296,20 @@ void updateTimersCountdownText() {
 void updateCurrentPageDynamic() {
   drawHeader(false);
   PageConfig& pg = cfg.pages[currentPageIndex];
+
+  // Clear an expired scene/script/button "Sent" flash and redraw that tile.
+  if (actionFlashPage >= 0 && millis() - actionFlashStartMs > ACTION_FLASH_MS) {
+    int fp = actionFlashPage, ft = actionFlashTile;
+    actionFlashPage = -1;
+    actionFlashTile = -1;
+    if (fp == currentPageIndex && ft < pg.tileCount) {
+      tileRuntime[fp][ft].cacheKey = "";
+      int slotOf[MAX_TILES];
+      layoutPageTiles(pg, slotOf);
+      drawTileSprite(ft, slotOf[ft], pg.tiles[ft].size == 2, true);
+    }
+  }
+
   if (strcmp(pg.type, "home") == 0 || strcmp(pg.type, "area") == 0) {
     updateGridTiles(false);
   } else if (strcmp(pg.type, "timers") == 0) {
@@ -1905,6 +2364,7 @@ int hitTestTile(int x, int y) {
 void navigateToPageType(const char* type) {
   for (int i = 0; i < cfg.pageCount; i++) {
     if (strcmp(cfg.pages[i].type, type) == 0) {
+      if (cfg.pages[i].hidden) return; // page is hidden from nav - do nothing
       currentPageIndex = i;
       pageDirty = true;
       return;
@@ -1931,20 +2391,43 @@ void handleTileTap(int tileIdx) {
   if (strlen(tl.entityId) == 0 || !haConfigured()) return;
   if (strcmp(tl.type, "sensor") == 0) return; // read-only
 
+  int slotOfTap[MAX_TILES];
+  layoutPageTiles(pg, slotOfTap);
+
+  // scene / script / button: fire the service, show a brief "Sent" flash.
+  if (strcmp(tl.type, "scene") == 0 || strcmp(tl.type, "script") == 0 ||
+      strcmp(tl.type, "button") == 0) {
+    actionFlashPage = currentPageIndex;
+    actionFlashTile = tileIdx;
+    actionFlashStartMs = millis();
+    rt.cacheKey = "";
+    drawTileSprite(tileIdx, slotOfTap[tileIdx], tl.size == 2, true);
+    haActivate(tl.entityId);
+    return;
+  }
+
   bool newState = !(rt.known && rt.on);
   rt.on = newState;
   rt.known = true;
   rt.cacheKey = "";
 
-  int slotOf[MAX_TILES];
-  layoutPageTiles(pg, slotOf);
-  drawTileSprite(tileIdx, slotOf[tileIdx], tl.size == 2, true);
+  drawTileSprite(tileIdx, slotOfTap[tileIdx], tl.size == 2, true);
 
   haSendCommand(tl.entityId, newState);
 }
 
 void handleStatusPageTap(int x, int y) {
   bool inButtonX = (x >= STATUS_THEME_BTN_X && x < STATUS_THEME_BTN_X + STATUS_THEME_BTN_W);
+
+  // Tapping the HA row forces an immediate connection re-test. Shows
+  // "Checking..." right away; ensureHaCheck() does the actual probe on the
+  // next loop and redraws with the result.
+  if (y >= STATUS_HA_ROW_Y - 6 && y < STATUS_HA_ROW_Y + STATUS_ROW_H - 4) {
+    haConnState = HA_CONN_UNKNOWN;
+    lastHaCheckMs = 0;
+    pageDirty = true;
+    return;
+  }
 
   if (inButtonX && y >= STATUS_THEME_BTN_Y && y < STATUS_THEME_BTN_Y + STATUS_BTN_H) {
     cfg.darkTheme = !cfg.darkTheme;
@@ -2158,12 +2641,12 @@ void handleContinuousTouch() {
       int dy = abs(y - swipeStartY);
 
       if (abs(dx) >= SWIPE_THRESHOLD_X && dy < 40) {
-        if (dx < 0 && currentPageIndex < cfg.pageCount - 1) currentPageIndex++;
-        else if (dx > 0 && currentPageIndex > 0) currentPageIndex--;
-        pageDirty = true;
+        int target = (dx < 0) ? nextVisiblePage(currentPageIndex) : prevVisiblePage(currentPageIndex);
+        if (target != currentPageIndex) { currentPageIndex = target; pageDirty = true; }
       } else if (swipeStartY >= SCREEN_H - FOOTER_H) {
-        // Footer dot tap takes priority over any page-specific handling.
+        // Footer icon tap takes priority over any page-specific handling.
         for (int i = 0; i < cfg.pageCount; i++) {
+          if (cfg.pages[i].hidden) continue;
           int fx, fy, fw, fh;
           getFooterDotRect(i, fx, fy, fw, fh);
           if (swipeStartX >= fx && swipeStartX < fx + fw) {
@@ -2191,6 +2674,10 @@ void handleContinuousTouch() {
 // WEB SERVER
 // =========================================================
 WebServer server(80);
+
+// One-shot banner shown at the top of the settings page after a redirect
+// (e.g. the result of the HA connection probe / config import on Save).
+String gSaveNotice = "";
 
 String htmlEscape(const String& s) {
   String out;
@@ -2222,8 +2709,11 @@ String pageHeaderHtml(const String& title) {
   h += "*{box-sizing:border-box;}";
   h += "body{font-family:var(--font);background:var(--bg);color:var(--text);margin:0;}";
   h += ".wrap{max-width:480px;margin:0 auto;padding:20px 18px 60px;}";
-  h += "h1{font-size:22px;margin:4px 0 18px;letter-spacing:0.03em;}";
-  h += "h2{font-size:13px;margin:26px 0 8px;color:var(--dim);text-transform:uppercase;letter-spacing:0.08em;}";
+  h += "h1{font-size:22px;margin:4px 0 4px;letter-spacing:0.03em;}";
+  h += "h1 .dim{color:var(--dim);font-weight:400;}";
+  h += "h2{font-size:13px;margin:0 0 12px;color:var(--text);text-transform:uppercase;letter-spacing:0.08em;border-left:3px solid var(--accent);padding-left:10px;}";
+  h += "h3{font-size:12px;margin:18px 0 6px;color:var(--dim);text-transform:uppercase;letter-spacing:0.07em;}";
+  h += ".card{border:1px solid var(--border);border-radius:16px;padding:16px 16px 18px;margin:16px 0;}";
   h += "a{color:var(--accent);text-decoration:none;} a:hover{text-decoration:underline;}";
   h += "label{display:block;font-size:13px;color:var(--dim);margin:10px 0 4px;}";
   h += ".check{display:flex;align-items:center;gap:8px;margin:14px 0 6px;}";
@@ -2239,24 +2729,136 @@ String pageHeaderHtml(const String& title) {
   h += ".row b{font-size:15px;}";
   h += ".muted{color:var(--dim);font-size:13px;}";
   h += "form{margin:0;}";
+  h += ".notice{background:var(--panel2);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin:12px 0;font-size:13px;}";
+  h += ".pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;border:1px solid var(--border);color:var(--dim);}";
+  h += ".pill.ok{color:#7ee2b8;border-color:#2f6b52;}";
+  h += ".pill.bad{color:#ff8a9b;border-color:#5a2230;}";
+  h += ".pill.warn{color:#e2c97e;border-color:#6b5f2f;}";
+  h += ".drag-handle{cursor:grab;display:inline-block;padding:0 10px 0 2px;margin-right:4px;color:var(--dim);font-size:17px;line-height:1;vertical-align:-2px;touch-action:none;user-select:none;}";
+  h += ".drag-handle:active{cursor:grabbing;}";
+  h += ".drag-float{position:fixed;z-index:999;margin:0!important;box-shadow:0 10px 28px rgba(0,0,0,.55);opacity:.97;transform:scale(1.03);user-select:none;}";
+  h += ".drop-ph{border:2px dashed var(--accent);border-radius:14px;margin:10px 0;background:rgba(79,195,247,.10);}";
+  h += "body.dragging{cursor:grabbing;user-select:none;}";
   h += "</style></head><body><div class='wrap'>";
   return h;
 }
 
 const String htmlFooter = "</div></body></html>";
 
-String toUpperStr(String s) {
-  s.toUpperCase();
-  return s;
+// JS for the tile Add/Edit forms: when the Type changes, fetch that
+// domain's entities from /ha/entities and fill the <datalist id='entlist'>.
+// Fails soft - on any error the plain text field still accepts a typed ID.
+String entityPickerScript() {
+  return F(
+    "<script>(function(){"
+    "var sel=document.querySelector('select[name=type]');"
+    "var dl=document.getElementById('entlist');"
+    "var hint=document.getElementById('entHint');"
+    "if(!sel||!dl)return;"
+    "function fill(){var t=sel.value;dl.innerHTML='';"
+    "if(['light','switch','sensor','scene','script','button'].indexOf(t)<0){hint.textContent=(t=='weather'||t=='timer')?'No entity needed for this type.':'';return;}"
+    "hint.textContent='Loading '+t+' entities\\u2026';"
+    "fetch('/ha/entities?domain='+t).then(function(r){if(!r.ok)throw 0;return r.text();}).then(function(x){"
+    "var n=0;x.split('\\n').forEach(function(l){l=l.trim();if(!l)return;var p=l.split('|');"
+    "var o=document.createElement('option');o.value=p[0];if(p[1])o.label=p[1];dl.appendChild(o);n++;});"
+    "hint.textContent=n?(n+' entities \\u2013 type to filter, or paste any ID'):'None found \\u2013 you can still type an ID.';"
+    "}).catch(function(){hint.textContent='Suggestions unavailable (check the HA connection) \\u2013 type the ID manually.';});}"
+    "sel.addEventListener('change',fill);fill();"
+    "})();</script>");
+}
+
+// JS for the "Add from area" block: loads areas into #areaSel, then on
+// "Load entities" fetches /ha/area-entities and renders a checklist with
+// group members pre-unchecked. Fails soft - the block just shows a notice.
+String areaPickerScript() {
+  return F(
+    "<script>(function(){"
+    "var AS=document.getElementById('areaSel');if(!AS)return;"
+    "fetch('/ha/areas').then(function(r){if(!r.ok)throw 0;return r.text();}).then(function(t){"
+    "AS.innerHTML='<option value=\"\">Select an area\\u2026</option>';"
+    "t.split('\\n').forEach(function(l){l=l.trim();if(!l)return;var p=l.split('|');"
+    "var o=document.createElement('option');o.value=p[0];o.textContent=p[1]||p[0];AS.appendChild(o);});"
+    "}).catch(function(){AS.innerHTML='<option value=\"\">Areas unavailable (check HA connection)</option>';});"
+    "window.loadArea=function(){var a=AS.value;if(!a)return;"
+    "var dom=document.querySelector('input[name=areaDomain]:checked').value;"
+    "document.getElementById('areaFormType').value=dom;"
+    "var L=document.getElementById('areaList');var B=document.getElementById('areaAddBtn');"
+    "B.style.display='none';L.textContent='Loading\\u2026';"
+    "fetch('/ha/area-entities?area='+encodeURIComponent(a)+'&domain='+dom).then(function(r){if(!r.ok)throw 0;return r.text();}).then(function(t){"
+    "var rows=t.split('\\n').map(function(l){return l.trim();}).filter(Boolean).map(function(l){var p=l.split('|');"
+    "return{id:p[0],name:p[1]||p[0],members:(p[2]||'').split(',').filter(Boolean)};});"
+    "if(!rows.length){L.textContent='No '+dom+' entities in that area.';return;}"
+    "var covered={};rows.forEach(function(r){r.members.forEach(function(m){covered[m]=1;});});"
+    "rows.sort(function(x,y){return (y.members.length>0)-(x.members.length>0)||x.name.localeCompare(y.name);});"
+    "L.innerHTML='';rows.forEach(function(e){var g=e.members.length>0;"
+    "var d=document.createElement('div');d.className='check';"
+    "var cb=document.createElement('input');cb.type='checkbox';cb.name='eid';cb.value=e.id+'|'+e.name;"
+    "cb.checked=g||!covered[e.id];"
+    "var lb=document.createElement('label');lb.style.margin='0';"
+    "lb.textContent=e.name+(g?(' (group of '+e.members.length+')'):(covered[e.id]?' \\u2013 covered by a group above':''));"
+    "d.appendChild(cb);d.appendChild(lb);L.appendChild(d);});"
+    "B.style.display='';"
+    "}).catch(function(){L.textContent='Could not load entities (check HA connection).';});};"
+    "})();</script>");
+}
+
+// Shared drag-to-reorder helper. makeSortable(listEl, onDrop): attaches to
+// every .drag-handle inside listEl. While dragging, the row is lifted out
+// of flow and tracks the pointer (.drag-float); a dashed placeholder
+// (.drop-ph) marks where it will land and the other rows reflow around it.
+// On drop, onDrop is called with the data-item values in the new order.
+// Pointer Events - mouse + touch, no library.
+String sortableScript() {
+  return F(
+    "<script>"
+    "function makeSortable(list,onDrop){"
+    "list.querySelectorAll('.drag-handle').forEach(function(h){"
+    "h.addEventListener('pointerdown',function(e){e.preventDefault();"
+    "var item=h.closest('[data-item]');var r=item.getBoundingClientRect();"
+    "var offX=e.clientX-r.left,offY=e.clientY-r.top;"
+    "var ph=document.createElement('div');ph.className='drop-ph';ph.style.height=r.height+'px';"
+    "list.insertBefore(ph,item);"
+    "item.classList.add('drag-float');item.style.width=r.width+'px';"
+    "document.body.classList.add('dragging');"
+    "function place(x,y){item.style.left=(x-offX)+'px';item.style.top=(y-offY)+'px';}"
+    "place(e.clientX,e.clientY);h.setPointerCapture(e.pointerId);"
+    "function mv(ev){place(ev.clientX,ev.clientY);var y=ev.clientY,before=null;"
+    "var sibs=list.querySelectorAll('[data-item]:not(.drag-float)');"
+    "for(var i=0;i<sibs.length;i++){var b=sibs[i].getBoundingClientRect();"
+    "if(y<b.top+b.height/2){before=sibs[i];break;}}"
+    "if(before)list.insertBefore(ph,before);else list.appendChild(ph);}"
+    "function up(ev){try{h.releasePointerCapture(ev.pointerId);}catch(x){}"
+    "h.removeEventListener('pointermove',mv);h.removeEventListener('pointerup',up);h.removeEventListener('pointercancel',up);"
+    "list.insertBefore(item,ph);ph.remove();"
+    "item.classList.remove('drag-float');item.style.width=item.style.left=item.style.top='';"
+    "document.body.classList.remove('dragging');"
+    "onDrop([].map.call(list.querySelectorAll('[data-item]'),function(el){return el.dataset.item;}));}"
+    "h.addEventListener('pointermove',mv);h.addEventListener('pointerup',up);h.addEventListener('pointercancel',up);});});}"
+    // Always reload after: the rows' Edit/Delete buttons carry positional
+    // indices that must be re-rendered against the saved order.
+    "function postOrder(url,order,extra){"
+    "fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+    "body:'order='+encodeURIComponent(order.join(','))+(extra||'')})"
+    ".then(function(){location.reload();}).catch(function(){location.reload();});}"
+    "</script>");
 }
 
 void handleRoot() {
   String h = pageHeaderHtml("HA Panel Settings");
-  h += "<h1>" + htmlEscape(toUpperStr(cfg.deviceName)) + "</h1>";
+  h += "<h1>HA PANEL <span class='dim'>&mdash; " + htmlEscape(cfg.deviceName) + "</span></h1>";
 
-  h += "<h2>Device</h2><form method='POST' action='/save-device'>";
-  h += "<label>Device name (also used as .local hostname)</label>";
+  if (gSaveNotice.length() > 0) {
+    h += "<div class='notice'>" + htmlEscape(gSaveNotice) + "</div>";
+    gSaveNotice = "";
+  }
+
+  // ---- Device / Home Assistant / Weather (one form, three cards) --------
+  h += "<form method='POST' action='/save-device'>";
+
+  h += "<section class='card'><h2>Device</h2>";
+  h += "<label>Device name (also the .local hostname)</label>";
   h += "<input name='deviceName' value='" + htmlEscape(cfg.deviceName) + "'>";
+  h += "<div class='muted' style='margin-top:4px'>Letters, numbers and hyphens. Reach the panel at <b>" + htmlEscape(sanitizeHostname(cfg.deviceName)) + ".local</b>.</div>";
   h += "<label>Area / room name (shown on this panel's Home screen)</label>";
   h += "<input name='areaName' value='" + htmlEscape(cfg.pages[0].name) + "' placeholder='e.g. Family Room'>";
   h += "<div class='check'><input type='checkbox' id='use12h' name='use12h'" + String(cfg.use12Hour ? " checked" : "") +
@@ -2268,12 +2870,12 @@ void handleRoot() {
     h += ">" + String(TZ_TABLE[i].label) + "</option>";
   }
   h += "</select>";
-  h += "<label>HA Panel Text Size</label><select name='uiFontSize'>";
+  h += "<label>Panel text size</label><select name='uiFontSize'>";
   h += "<option value='0'" + String(cfg.uiFontSize == 0 ? " selected" : "") + ">Small</option>";
   h += "<option value='1'" + String(cfg.uiFontSize == 1 ? " selected" : "") + ">Medium</option>";
   h += "<option value='2'" + String(cfg.uiFontSize == 2 ? " selected" : "") + ">Large</option>";
   h += "</select>";
-  h += "<label>HA Panel Typeface (experimental)</label><select name='uiTypeface'>";
+  h += "<label>Panel typeface (experimental)</label><select name='uiTypeface'>";
   for (int i = 0; i < UI_TYPEFACES_COUNT; i++) {
     h += "<option value='" + String(UI_TYPEFACES[i].key) + "'";
     if (String(cfg.uiTypeface) == UI_TYPEFACES[i].key) h += " selected";
@@ -2282,31 +2884,106 @@ void handleRoot() {
   h += "</select>";
   h += "<div class='check'><input type='checkbox' id='uiBoldText' name='uiBoldText'" + String(cfg.uiBoldText ? " checked" : "") +
        "><label for='uiBoldText' style='margin:0'>Bold / thicker stroke</label></div>";
-  h += "<div class='muted' style='margin-top:6px;'>Classic is the built-in bitmap font this project has used all along - guaranteed to fit every screen. The other options are genuinely different typefaces, but layouts were pixel-tuned against Classic's metrics, so text may sit differently or clip in spots until we see how it actually renders and adjust.</div>";
+  h += "<div class='muted' style='margin-top:6px;'>Classic is the built-in bitmap font, pixel-tuned to fit every screen. The others are real typefaces but text may shift or clip until adjusted.</div>";
+  h += "</section>";
 
-  h += "<div class='check'><input type='checkbox' id='weatherAuto' name='weatherAuto'" + String(cfg.weatherLocationAuto ? " checked" : "") +
-       "><label for='weatherAuto' style='margin:0'>Match weather location to time zone</label></div>";
-  h += "<label>Weather Location</label>";
-  h += "<input name='weatherName' value='" + htmlEscape(cfg.weatherLocationName) + "' placeholder='e.g. Seattle, WA'>";
-  h += "<div class='grid2'>";
-  h += "<div><label>Latitude</label><input name='weatherLat' value='" + String(cfg.weatherLat, 4) + "'></div>";
-  h += "<div><label>Longitude</label><input name='weatherLon' value='" + String(cfg.weatherLon, 4) + "'></div>";
-  h += "</div>";
-  h += "<div class='muted' style='margin-top:6px;'>When matched to time zone, location updates automatically and the fields above are ignored. Uncheck to set an exact location.</div>";
-
+  h += "<section class='card'><h2>Home Assistant</h2>";
   h += "<label>Home Assistant URL</label>";
   h += "<input name='haUrl' value='" + htmlEscape(cfg.haUrl) + "'>";
+  h += "<div class='muted' style='margin-top:4px'>Plain http:// on your LAN. Left at the default, the panel tries to find HA automatically.</div>";
   h += "<label>Long-lived access token</label>";
   h += "<input type='password' name='haToken' placeholder='" +
        String(strlen(cfg.haToken) > 0 ? "Saved (leave blank to keep it)" : "Paste your HA token") + "'>";
-  h += "<button class='primary' type='submit'>Save</button></form>";
+  {
+    const char* pillCls = haConnState == HA_CONN_OK ? "ok"
+                        : (haConnState == HA_CONN_AUTH_FAIL || haConnState == HA_CONN_UNREACHABLE) ? "bad"
+                        : "warn";
+    h += "<div style='margin-top:12px'>Connection: <span id='haStat' class='pill " + String(pillCls) + "'>" +
+         htmlEscape(haConnLabel(haConnState)) + "</span> ";
+    h += "<button type='button' onclick='haTest(this)'>Test</button></div>";
+    h += "<div class='muted' style='margin-top:4px'>Tests the <em>saved</em> URL and token - Save first if you just changed them. A successful save also imports your time zone and location from HA.</div>";
+  }
+  h += "</section>";
 
-  h += "<h2>Timer Light Flash</h2><form method='POST' action='/save-flash'>";
+  h += "<section class='card'><h2>Weather</h2>";
+  h += "<div class='muted' style='margin-bottom:6px'>Location is imported from Home Assistant on save. Edit below to override it.</div>";
+  h += "<label>Location name</label>";
+  h += "<input name='weatherName' value='" + htmlEscape(cfg.weatherLocationName) + "' placeholder='e.g. Seattle, WA'>";
+  h += "<div class='grid2' style='margin-top:8px'>";
+  h += "<div><label>Latitude</label><input name='weatherLat' value='" + String(cfg.weatherLat, 4) + "'></div>";
+  h += "<div><label>Longitude</label><input name='weatherLon' value='" + String(cfg.weatherLon, 4) + "'></div>";
+  h += "</div>";
+  h += "</section>";
+
+  h += "<button class='primary' type='submit'>Save device, Home Assistant &amp; weather</button></form>";
+  h += "<script>function haTest(b){var s=document.getElementById('haStat');b.disabled=true;s.textContent='Testing...';s.className='pill warn';"
+       "fetch('/ha-test').then(r=>r.text()).then(t=>{s.textContent=t;s.className='pill '+(t=='Connected'?'ok':'bad');b.disabled=false;})"
+       ".catch(function(){s.textContent='Test failed';s.className='pill bad';b.disabled=false;});}</script>";
+
+  // ---- Pages ----------------------------------------------------------
+  h += "<section class='card'><h2>Pages</h2>";
+  {
+    h += "<div class='muted' style='margin-bottom:8px'>Drag a handle to reorder (Home stays first). Tick <b>Hide</b> to drop a page from the panel's swipe nav and footer. ";
+    if (cfg.customPageOrder) {
+      h += "Order is custom &ndash; ";
+      h += "<form method='POST' action='/page/order-reset' style='display:inline'><button type='submit'>reset to default</button></form>";
+    } else {
+      h += "Default order: Home, rooms, Forecast, Timers, Status.";
+    }
+    h += "</div>";
+
+    // Home is pinned at index 0 (several call sites assume cfg.pages[0] is
+    // the home page), so it renders outside the sortable list.
+    for (int i = 0; i < cfg.pageCount; i++) {
+      PageConfig& pg = cfg.pages[i];
+      bool isHome = (strcmp(pg.type, "home") == 0);
+      String id = String(pg.id);
+
+      if (i == 1) h += "<div id='pageList' class='sortable'>";
+
+      h += "<div class='row' data-item='" + id + "'>";
+      if (!isHome) h += "<span class='drag-handle' title='Drag to reorder'>&#x283F;</span>";
+      h += "<b>" + htmlEscape(pg.name) + "</b> <span class='muted'>(" + String(pg.type) + ")</span>";
+      if (pg.hidden) h += " <span class='pill warn'>hidden</span>";
+      h += "<br><a href='/page?id=" + id + "'>Manage tiles</a> &nbsp; ";
+      h += "<form style='display:inline' method='POST' action='/page/rename'>";
+      h += "<input type='hidden' name='id' value='" + id + "'>";
+      h += "<input style='width:110px;display:inline-block' name='name' value='" + htmlEscape(pg.name) + "'>";
+      h += "<button type='submit'>Rename</button></form>";
+      if (pg.deletable) {
+        h += " <form style='display:inline' method='POST' action='/page/delete' onsubmit=\"return confirm('Delete this page and its tiles?');\">";
+        h += "<input type='hidden' name='id' value='" + id + "'>";
+        h += "<button class='danger' type='submit'>Delete</button></form>";
+      }
+      if (pageCanHide(pg.type)) {
+        h += " <form style='display:inline' method='POST' action='/page/set-hidden'>";
+        h += "<input type='hidden' name='id' value='" + id + "'>";
+        h += "<label style='font-size:13px;color:var(--dim)'><input type='checkbox' name='hidden' style='width:16px;height:16px;vertical-align:-3px' onchange='this.form.submit()'" +
+             String(pg.hidden ? " checked" : "") + "> Hide</label></form>";
+      }
+      h += "</div>";
+    }
+    if (cfg.pageCount > 1) h += "</div>";
+
+    if (cfg.pageCount < MAX_PAGES) {
+      h += "<form method='POST' action='/page/add' style='margin-top:12px'>";
+      h += "<label>Add area page</label><input name='name' placeholder='e.g. Kitchen'>";
+      h += "<button class='primary' type='submit'>Add page</button></form>";
+    } else {
+      h += "<p class='muted'>Maximum of " + String(MAX_PAGES) + " pages reached.</p>";
+    }
+  }
+  h += "</section>";
+
+  // ---- Timers --------------------------------------------------------
+  h += "<section class='card'><h2>Timers</h2>";
+
+  h += "<h3>Light flash on expiry</h3><form method='POST' action='/save-flash'>";
   h += "<label>Pulse rate (ms between on/off)</label><input name='flashRate' value='" + String(cfg.flashPulseRateMs) + "'>";
   h += "<label>Pulse count (full on/off cycles)</label><input name='flashCount' value='" + String(cfg.flashPulseCount) + "'>";
   h += "<label>Dim-phase brightness (%) - the \"on\" phase is always 100%</label>";
   h += "<input name='flashBrightness' value='" + String(cfg.flashBrightnessPct) + "'>";
-  h += "<div class='muted' style='margin-top:6px;'>Applies to dimmable lights; switches without brightness just toggle fully on/off.</div>";
+  h += "<div class='muted' style='margin-top:6px;'>Applies to dimmable lights; switches just toggle fully on/off.</div>";
   h += "<label>Lights to flash (from the Home page)</label>";
   {
     String selectedIds = String(",") + cfg.flashLightIds + ",";
@@ -2317,19 +2994,16 @@ void handleRoot() {
       if ((strcmp(hlt.type, "light") == 0 || strcmp(hlt.type, "switch") == 0) && strlen(hlt.entityId) > 0) {
         anyLights = true;
         String eid = hlt.entityId;
-        String needle = String(",") + eid + ",";
-        bool checked = selectedIds.indexOf(needle) >= 0;
+        bool checked = selectedIds.indexOf(String(",") + eid + ",") >= 0;
         h += "<div class='check'><input type='checkbox' name='flashLight' value='" + htmlEscape(eid) + "'" +
              String(checked ? " checked" : "") + "><label style='margin:0'>" + htmlEscape(hlt.label) + "</label></div>";
       }
     }
-    if (!anyLights) {
-      h += "<div class='muted'>Add light or switch tiles to the Home page first.</div>";
-    }
+    if (!anyLights) h += "<div class='muted'>Add light or switch tiles to the Home page first.</div>";
   }
-  h += "<button class='primary' type='submit'>Save</button></form>";
+  h += "<button class='primary' type='submit'>Save flash settings</button></form>";
 
-  h += "<h2>Timer Presets</h2><form method='POST' action='/save-timers'>";
+  h += "<h3>Preset buttons</h3><form method='POST' action='/save-timers'>";
   for (int i = 0; i < 5; i++) {
     int mins = cfg.timerPresetSec[i] / 60;
     int secs = cfg.timerPresetSec[i] % 60;
@@ -2340,38 +3014,21 @@ void handleRoot() {
     h += "<input name='presetSec" + String(i) + "' value='" + String(secs) + "'></div>";
     h += "</div>";
   }
-  h += "<button class='primary' type='submit'>Save</button></form>";
+  h += "<button class='primary' type='submit'>Save presets</button></form>";
+  h += "</section>";
 
-  h += "<h2>Pages</h2>";
-  for (int i = 0; i < cfg.pageCount; i++) {
-    PageConfig& pg = cfg.pages[i];
-    h += "<div class='row'><b>" + htmlEscape(pg.name) + "</b> <span class='muted'>(" + String(pg.type) + ")</span><br>";
-    h += "<a href='/page?id=" + String(pg.id) + "'>Manage tiles</a> &nbsp; ";
-    h += "<form style='display:inline' method='POST' action='/page/rename'>";
-    h += "<input type='hidden' name='id' value='" + String(pg.id) + "'>";
-    h += "<input style='width:120px;display:inline-block' name='name' value='" + htmlEscape(pg.name) + "'>";
-    h += "<button type='submit'>Rename</button></form>";
-    if (pg.deletable) {
-      h += " <form style='display:inline' method='POST' action='/page/delete' onsubmit=\"return confirm('Delete this page and its tiles?');\">";
-      h += "<input type='hidden' name='id' value='" + String(pg.id) + "'>";
-      h += "<button class='danger' type='submit'>Delete</button></form>";
-    }
-    h += "</div>";
-  }
-
-  if (cfg.pageCount < MAX_PAGES) {
-    h += "<form method='POST' action='/page/add'>";
-    h += "<label>Add area page</label><input name='name' placeholder='e.g. Kitchen'>";
-    h += "<button class='primary' type='submit'>Add page</button></form>";
-  } else {
-    h += "<p>Maximum of " + String(MAX_PAGES) + " pages reached.</p>";
-  }
-
-  h += "<h2>Backup</h2><a href='/export'>Download config backup</a>";
+  // ---- Backup & Restore --------------------------------------------
+  h += "<section class='card'><h2>Backup &amp; Restore</h2>";
+  h += "<a href='/export'>Download config backup</a>";
   h += "<form method='POST' action='/import' enctype='multipart/form-data' style='margin-top:12px;' onsubmit=\"return confirm('This replaces ALL current settings - device name, pages, tiles, everything. Continue?');\">";
   h += "<label>Restore from a backup file</label>";
   h += "<input type='file' name='configFile' accept='.json'>";
   h += "<button class='primary' type='submit'>Import &amp; Reboot</button></form>";
+  h += "</section>";
+
+  h += sortableScript();
+  h += "<script>(function(){var L=document.getElementById('pageList');"
+       "if(L)makeSortable(L,function(o){postOrder('/page/reorder',o);});})();</script>";
 
   h += htmlFooter;
   server.send(200, "text/html", h);
@@ -2396,21 +3053,14 @@ void handlePageManage() {
   int used = 0;
   for (int i = 0; i < pg->tileCount; i++) used += pg->tiles[i].size;
 
+  if (pg->tileCount > 1) h += "<div class='muted' style='margin-bottom:6px'>Drag the handle to reorder tiles.</div>";
+  h += "<div id='tileList' class='sortable'>";
   for (int i = 0; i < pg->tileCount; i++) {
     TileConfig& tl = pg->tiles[i];
-    h += "<div class='row'>";
+    h += "<div class='row' data-item='" + String(i) + "'>";
+    h += "<span class='drag-handle' title='Drag to reorder'>&#x283F;</span>";
     h += "<b>" + htmlEscape(tl.label) + "</b> <span class='muted'>(" + String(tl.type) + (tl.size == 2 ? ", wide" : "") + ")</span><br>";
     h += "<span class='muted'>" + htmlEscape(tl.entityId) + "</span><br>";
-    h += "<form style='display:inline' method='POST' action='/tile/move'>";
-    h += "<input type='hidden' name='pageId' value='" + String(pg->id) + "'>";
-    h += "<input type='hidden' name='index' value='" + String(i) + "'>";
-    h += "<input type='hidden' name='dir' value='up'>";
-    h += "<button type='submit'" + String(i == 0 ? " disabled" : "") + ">Up</button></form>";
-    h += "<form style='display:inline' method='POST' action='/tile/move'>";
-    h += "<input type='hidden' name='pageId' value='" + String(pg->id) + "'>";
-    h += "<input type='hidden' name='index' value='" + String(i) + "'>";
-    h += "<input type='hidden' name='dir' value='down'>";
-    h += "<button type='submit'" + String(i == pg->tileCount - 1 ? " disabled" : "") + ">Down</button></form>";
     h += "<form style='display:inline' method='GET' action='/tile/edit'>";
     h += "<input type='hidden' name='pageId' value='" + String(pg->id) + "'>";
     h += "<input type='hidden' name='index' value='" + String(i) + "'>";
@@ -2421,6 +3071,7 @@ void handlePageManage() {
     h += "<button class='danger' type='submit'>Remove</button></form>";
     h += "</div>";
   }
+  h += "</div>";
 
   h += "<p>" + String(used) + " / 6 grid cells used.</p>";
 
@@ -2431,16 +3082,44 @@ void handlePageManage() {
     h += "<option value='light'>Light (toggle + dim)</option>";
     h += "<option value='switch'>Switch (toggle only)</option>";
     h += "<option value='sensor'>Sensor (read-only)</option>";
+    h += "<option value='scene'>Scene (tap to activate)</option>";
+    h += "<option value='script'>Script (tap to run)</option>";
+    h += "<option value='button'>Button (tap to press)</option>";
     h += "<option value='weather'>Weather (icon + temperature)</option>";
     h += "<option value='timer'>Timer (countdown status)</option>";
     h += "</select>";
     h += "<label>Label</label><input name='label' placeholder='e.g. Bedside Lamp'>";
-    h += "<label>Entity ID (not used for Weather/Timer tiles)</label><input name='entityId' placeholder='e.g. light.tobias_bedside'>";
+    h += "<label>Entity ID (not used for Weather/Timer tiles)</label>";
+    h += "<input name='entityId' list='entlist' autocomplete='off' placeholder='e.g. light.tobias_bedside'>";
+    h += "<datalist id='entlist'></datalist>";
+    h += "<div class='muted' id='entHint'></div>";
     h += "<label>Size</label><select name='size'><option value='1'>1x1</option><option value='2'>1x2 (wide)</option></select>";
     h += "<button class='primary' type='submit'>Add tile</button></form>";
+    h += entityPickerScript();
+
+    // --- Add from a Home Assistant area -------------------------------
+    h += "<h2>Add from a Home Assistant area</h2>";
+    h += "<div class='muted' style='margin-bottom:8px'>Pick an area, load its lights or switches, and tick the ones you want. Group entities are listed first; their members are pre-unchecked since adding the group already covers them.</div>";
+    h += "<label>Area</label><select id='areaSel'><option value=''>Loading areas...</option></select>";
+    h += "<div style='margin-top:8px'>";
+    h += "<label class='check' style='display:inline-flex'><input type='radio' name='areaDomain' value='light' checked> Lights</label>";
+    h += "<label class='check' style='display:inline-flex;margin-left:16px'><input type='radio' name='areaDomain' value='switch'> Switches</label>";
+    h += "</div>";
+    h += "<button type='button' onclick='loadArea()'>Load entities</button>";
+    h += "<form id='areaForm' method='POST' action='/tile/add-bulk' style='margin-top:10px'>";
+    h += "<input type='hidden' name='pageId' value='" + String(pg->id) + "'>";
+    h += "<input type='hidden' name='type' id='areaFormType' value='light'>";
+    h += "<div id='areaList' class='muted'>&mdash;</div>";
+    h += "<button class='primary' type='submit' id='areaAddBtn' style='display:none'>Add checked tiles</button>";
+    h += "</form>";
+    h += areaPickerScript();
   } else {
     h += "<p>This page's grid is full.</p>";
   }
+
+  h += sortableScript();
+  h += "<script>(function(){var L=document.getElementById('tileList');"
+       "if(L)makeSortable(L,function(o){postOrder('/tile/reorder',o,'&pageId=" + String(pg->id) + "');});})();</script>";
 
   h += htmlFooter;
   server.send(200, "text/html", h);
@@ -2471,9 +3150,11 @@ void handleTileEditForm() {
   h += "<input type='hidden' name='index' value='" + String(idx) + "'>";
 
   h += "<label>Type</label><select name='type'>";
-  const char* types[5] = {"light", "switch", "sensor", "weather", "timer"};
-  const char* typeLabels[5] = {"Light (toggle + dim)", "Switch (toggle only)", "Sensor (read-only)", "Weather (icon + temperature)", "Timer (countdown status)"};
-  for (int i = 0; i < 5; i++) {
+  const char* types[8] = {"light", "switch", "sensor", "scene", "script", "button", "weather", "timer"};
+  const char* typeLabels[8] = {"Light (toggle + dim)", "Switch (toggle only)", "Sensor (read-only)",
+                               "Scene (tap to activate)", "Script (tap to run)", "Button (tap to press)",
+                               "Weather (icon + temperature)", "Timer (countdown status)"};
+  for (int i = 0; i < 8; i++) {
     h += "<option value='" + String(types[i]) + "'";
     if (strcmp(tl.type, types[i]) == 0) h += " selected";
     h += ">" + String(typeLabels[i]) + "</option>";
@@ -2481,7 +3162,10 @@ void handleTileEditForm() {
   h += "</select>";
 
   h += "<label>Label</label><input name='label' value='" + htmlEscape(tl.label) + "'>";
-  h += "<label>Entity ID (not used for Weather/Timer tiles)</label><input name='entityId' value='" + htmlEscape(tl.entityId) + "'>";
+  h += "<label>Entity ID (not used for Weather/Timer tiles)</label>";
+  h += "<input name='entityId' list='entlist' autocomplete='off' value='" + htmlEscape(tl.entityId) + "'>";
+  h += "<datalist id='entlist'></datalist>";
+  h += "<div class='muted' id='entHint'></div>";
 
   h += "<label>Size</label><select name='size'>";
   h += "<option value='1'" + String(tl.size == 1 ? " selected" : "") + ">1x1</option>";
@@ -2489,6 +3173,7 @@ void handleTileEditForm() {
   h += "</select>";
 
   h += "<button class='primary' type='submit'>Save changes</button></form>";
+  h += entityPickerScript();
 
   h += htmlFooter;
   server.send(200, "text/html", h);
@@ -2544,8 +3229,7 @@ void handleSaveDevice() {
   String newToken = server.hasArg("haToken") ? server.arg("haToken") : "";
   String newAreaName = server.hasArg("areaName") ? server.arg("areaName") : cfg.pages[0].name;
 
-  newName.trim();
-  if (newName.length() == 0) newName = DEVICE_NAME_DEFAULT;
+  newName = sanitizeHostname(newName); // also generates a default if it ends up empty
   newUrl.trim();
   while (newUrl.endsWith("/")) newUrl.remove(newUrl.length() - 1);
   newToken.trim();
@@ -2575,20 +3259,12 @@ void handleSaveDevice() {
   // The underlying tables/config fields are left in place in case either
   // gets a UI control again later.
 
-  cfg.weatherLocationAuto = server.hasArg("weatherAuto");
-  if (cfg.weatherLocationAuto) {
-    const TzEntry& tzEntry = findTzEntry(cfg.timezone);
-    cfg.weatherLat = tzEntry.lat;
-    cfg.weatherLon = tzEntry.lon;
-    strlcpy(cfg.weatherLocationName, tzEntry.cityLabel, sizeof(cfg.weatherLocationName));
-  } else {
-    if (server.hasArg("weatherLat")) cfg.weatherLat = server.arg("weatherLat").toFloat();
-    if (server.hasArg("weatherLon")) cfg.weatherLon = server.arg("weatherLon").toFloat();
-    if (server.hasArg("weatherName")) {
-      String wn = server.arg("weatherName");
-      wn.trim();
-      if (wn.length() > 0) strlcpy(cfg.weatherLocationName, wn.c_str(), sizeof(cfg.weatherLocationName));
-    }
+  if (server.hasArg("weatherLat")) cfg.weatherLat = server.arg("weatherLat").toFloat();
+  if (server.hasArg("weatherLon")) cfg.weatherLon = server.arg("weatherLon").toFloat();
+  if (server.hasArg("weatherName")) {
+    String wn = server.arg("weatherName");
+    wn.trim();
+    if (wn.length() > 0) strlcpy(cfg.weatherLocationName, wn.c_str(), sizeof(cfg.weatherLocationName));
   }
   // Location may have changed - drop the cached forecast so it refetches promptly.
   weatherKnown = false;
@@ -2597,8 +3273,35 @@ void handleSaveDevice() {
   saveConfig();
   pageDirty = true;
 
+  // Probe HA and, when reachable, import time zone + location from it.
+  // Result is surfaced as a one-shot banner on the settings page.
+  gSaveNotice = "Settings saved.";
+  if (strlen(cfg.haUrl) > 0 && strlen(cfg.haToken) > 0) {
+    HaConnState s = haProbeConnection();
+    haConnState = s;
+    lastHaCheckMs = millis();
+    if (s == HA_CONN_OK) {
+      gSaveNotice += " Home Assistant connection OK.";
+      if (haFetchAndApplyConfig()) {
+        saveConfig();
+        gSaveNotice += " Imported time zone and location from Home Assistant.";
+      }
+    } else if (s == HA_CONN_AUTH_FAIL) {
+      gSaveNotice += " Home Assistant rejected the token - check it was pasted in full.";
+    } else {
+      gSaveNotice += " Could not reach Home Assistant at that URL.";
+    }
+  }
+
   server.sendHeader("Location", "/");
   server.send(303);
+}
+
+void handleHaTest() {
+  HaConnState s = haProbeConnection();
+  haConnState = s;
+  lastHaCheckMs = millis();
+  server.send(200, "text/plain", haConnLabel(s));
 }
 
 void handleSaveFlash() {
@@ -2663,8 +3366,24 @@ void handlePageAdd() {
     strlcpy(pg.name, name.c_str(), sizeof(pg.name));
     strlcpy(pg.type, "area", sizeof(pg.type));
     pg.deletable = true;
+    pg.hidden = false;
     pg.tileCount = 0;
     cfg.pageCount++;
+
+    // In auto mode the new area page sorts in ahead of Forecast/Timers/
+    // Status, so page indices shift; in custom mode it just stays at the
+    // end for the user to drag. Either way, keep the panel on the page it
+    // was showing and drop the now-misaligned per-tile runtime cache.
+    String curId = (currentPageIndex >= 0 && currentPageIndex < cfg.pageCount)
+                     ? String(cfg.pages[currentPageIndex].id) : "";
+    if (!cfg.customPageOrder) sortPages();
+    for (int i = 0; i < cfg.pageCount; i++) {
+      if (curId.length() && curId == cfg.pages[i].id) { currentPageIndex = i; break; }
+    }
+    for (int p = 0; p < MAX_PAGES; p++)
+      for (int t = 0; t < MAX_TILES; t++)
+        tileRuntime[p][t] = TileRuntime();
+    pageDirty = true;
     saveConfig();
   }
   server.sendHeader("Location", "/");
@@ -2739,6 +3458,96 @@ void handleTileAdd() {
   server.send(303);
 }
 
+// --- HA discovery endpoints (consumed by JS in the tile forms) ---------
+// All return newline-delimited "field|field" text, or an empty body with a
+// non-200 status on failure, so the browser side can degrade to plain
+// manual entry.
+
+void handleHaEntities() {
+  String domain = server.arg("domain");
+  if (domain != "light" && domain != "switch" && domain != "sensor" &&
+      domain != "scene" && domain != "script" && domain != "button") {
+    server.send(400, "text/plain", "");
+    return;
+  }
+  String tmpl = "{% for s in states." + domain +
+                " | sort(attribute='name') %}{{ s.entity_id }}|{{ s.name }}\n{% endfor %}";
+  String out;
+  if (!haRenderTemplate(tmpl, out)) { server.send(502, "text/plain", ""); return; }
+  server.send(200, "text/plain; charset=utf-8", out);
+}
+
+void handleHaAreas() {
+  String tmpl = "{% for a in areas() %}{{ a }}|{{ area_name(a) }}\n{% endfor %}";
+  String out;
+  if (!haRenderTemplate(tmpl, out)) { server.send(502, "text/plain", ""); return; }
+  server.send(200, "text/plain; charset=utf-8", out);
+}
+
+void handleHaAreaEntities() {
+  String area = server.arg("area");
+  String domain = server.arg("domain");
+  if (!isSafeSlug(area) || (domain != "light" && domain != "switch")) {
+    server.send(400, "text/plain", "");
+    return;
+  }
+  // Third field = comma-joined member ids for group entities (empty
+  // otherwise), so the browser can pre-uncheck members a group covers.
+  String tmpl = "{% for e in area_entities('" + area + "') if e.startswith('" + domain + ".') %}"
+                "{{ e }}|{{ state_attr(e,'friendly_name') or e }}|"
+                "{{ (state_attr(e,'entity_id') or []) | join(',') }}\n{% endfor %}";
+  String out;
+  if (!haRenderTemplate(tmpl, out)) { server.send(502, "text/plain", ""); return; }
+  server.send(200, "text/plain; charset=utf-8", out);
+}
+
+// Bulk add from the "Add from area" checklist. Checkbox values are
+// "entity_id|Friendly Name". Adds 1x1 tiles, skips duplicates, stops at
+// the 6-cell grid limit.
+void handleTileAddBulk() {
+  String pageId = server.arg("pageId");
+  PageConfig* pg = findPageById(pageId);
+  if (pg) {
+    String type = server.hasArg("type") ? server.arg("type") : "light";
+    if (type != "light" && type != "switch") type = "light";
+
+    int used = 0;
+    for (int i = 0; i < pg->tileCount; i++) used += pg->tiles[i].size;
+
+    int n = server.args();
+    for (int a = 0; a < n && pg->tileCount < MAX_TILES && used < 6; a++) {
+      if (server.argName(a) != "eid") continue;
+      String v = server.arg(a);
+      int bar = v.indexOf('|');
+      String eid = (bar >= 0 ? v.substring(0, bar) : v);
+      String label = (bar >= 0 ? v.substring(bar + 1) : "");
+      eid.trim();
+      label.trim();
+      if (eid.length() == 0) continue;
+
+      bool dup = false;
+      for (int i = 0; i < pg->tileCount; i++) {
+        if (eid == pg->tiles[i].entityId) { dup = true; break; }
+      }
+      if (dup) continue;
+
+      if (label.length() == 0) label = prettyFromEntityId(eid);
+
+      TileConfig& tl = pg->tiles[pg->tileCount];
+      strlcpy(tl.type, type.c_str(), sizeof(tl.type));
+      strlcpy(tl.label, label.c_str(), sizeof(tl.label));
+      strlcpy(tl.entityId, eid.c_str(), sizeof(tl.entityId));
+      tl.size = 1;
+      pg->tileCount++;
+      used++;
+    }
+    saveConfig();
+    pageDirty = true;
+  }
+  server.sendHeader("Location", "/page?id=" + pageId);
+  server.send(303);
+}
+
 void handleTileDelete() {
   if (server.hasArg("pageId") && server.hasArg("index")) {
     PageConfig* pg = findPageById(server.arg("pageId"));
@@ -2771,6 +3580,128 @@ void handleTileMove() {
     }
   }
   server.sendHeader("Location", "/page?id=" + server.arg("pageId"));
+  server.send(303);
+}
+
+// Parse a comma-separated "order" arg into tokens. Returns the count.
+static int parseOrderList(const String& order, String out[], int maxOut) {
+  int count = 0, start = 0;
+  while (start <= (int)order.length() && count < maxOut) {
+    int comma = order.indexOf(',', start);
+    String tok = (comma < 0) ? order.substring(start) : order.substring(start, comma);
+    tok.trim();
+    if (tok.length()) out[count++] = tok;
+    if (comma < 0) break;
+    start = comma + 1;
+  }
+  return count;
+}
+
+// Drag-to-reorder: "order" is the tile indices (0-based, original
+// positions) in their new order. Validated as a permutation before applying.
+void handleTileReorder() {
+  bool ok = false;
+  PageConfig* pg = findPageById(server.arg("pageId"));
+  if (pg && server.hasArg("order")) {
+    String toks[MAX_TILES];
+    int count = parseOrderList(server.arg("order"), toks, MAX_TILES);
+    if (count == pg->tileCount) {
+      bool seen[MAX_TILES];
+      for (int i = 0; i < MAX_TILES; i++) seen[i] = false;
+      bool valid = true;
+      int idxs[MAX_TILES];
+      for (int i = 0; i < count && valid; i++) {
+        idxs[i] = toks[i].toInt();
+        if (idxs[i] < 0 || idxs[i] >= pg->tileCount || seen[idxs[i]]) valid = false;
+        else seen[idxs[i]] = true;
+      }
+      if (valid) {
+        TileConfig tmp[MAX_TILES];
+        for (int i = 0; i < count; i++) tmp[i] = pg->tiles[idxs[i]];
+        for (int i = 0; i < count; i++) pg->tiles[i] = tmp[i];
+        int pageIdx = (int)(pg - cfg.pages);
+        for (int t = 0; t < MAX_TILES; t++) tileRuntime[pageIdx][t] = TileRuntime();
+        saveConfig();
+        pageDirty = true;
+        ok = true;
+      }
+    }
+  }
+  server.send(ok ? 200 : 400, "text/plain", ok ? "ok" : "bad");
+}
+
+// Drag-to-reorder pages. "order" is the new sequence of every page id
+// EXCEPT Home (Home is pinned at index 0 - several call sites assume
+// cfg.pages[0] is the home page). Switches the config to custom page
+// order, which loadConfig() then leaves untouched.
+void handlePageReorder() {
+  bool ok = false;
+  if (server.hasArg("order")) {
+    String ids[MAX_PAGES];
+    int count = parseOrderList(server.arg("order"), ids, MAX_PAGES);
+
+    // Expect exactly every non-home page, each once.
+    int movable = cfg.pageCount - 1; // minus Home
+    if (movable > 0 && count == movable) {
+      PageConfig ordered[MAX_PAGES];
+      int on = 0;
+      bool valid = true;
+      for (int k = 0; k < count && valid; k++) {
+        int found = -1;
+        for (int i = 1; i < cfg.pageCount; i++)
+          if (ids[k] == cfg.pages[i].id) { found = i; break; }
+        // reject unknown ids and duplicates (a dup would re-match the same slot)
+        if (found < 0) { valid = false; break; }
+        for (int j = 0; j < on; j++)
+          if (strcmp(ordered[j].id, cfg.pages[found].id) == 0) { valid = false; break; }
+        if (valid) ordered[on++] = cfg.pages[found];
+      }
+      if (valid && on == movable) {
+        String curId = (currentPageIndex >= 0 && currentPageIndex < cfg.pageCount)
+                         ? String(cfg.pages[currentPageIndex].id) : "";
+        for (int i = 0; i < movable; i++) cfg.pages[i + 1] = ordered[i];
+        cfg.customPageOrder = true;
+        for (int i = 0; i < cfg.pageCount; i++)
+          if (curId.length() && curId == cfg.pages[i].id) currentPageIndex = i;
+        for (int p = 0; p < MAX_PAGES; p++)
+          for (int t = 0; t < MAX_TILES; t++) tileRuntime[p][t] = TileRuntime();
+        saveConfig();
+        pageDirty = true;
+        ok = true;
+      }
+    }
+  }
+  server.send(ok ? 200 : 400, "text/plain", ok ? "ok" : "bad");
+}
+
+// Toggle a page's "hidden from the on-device nav" flag (checkbox auto-POSTs).
+void handlePageSetHidden() {
+  if (server.hasArg("id")) {
+    PageConfig* pg = findPageById(server.arg("id"));
+    if (pg && pageCanHide(pg->type)) {
+      pg->hidden = server.hasArg("hidden");
+      if (pg->hidden && (int)(pg - cfg.pages) == currentPageIndex) currentPageIndex = 0;
+      saveConfig();
+      pageDirty = true;
+    }
+  }
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+// Restore the automatic page order (Home, areas, Forecast, Timers, Status).
+void handlePageOrderReset() {
+  String curId = (currentPageIndex >= 0 && currentPageIndex < cfg.pageCount)
+                   ? String(cfg.pages[currentPageIndex].id) : "";
+  cfg.customPageOrder = false;
+  sortPages();
+  for (int i = 0; i < cfg.pageCount; i++)
+    if (curId.length() && curId == cfg.pages[i].id) currentPageIndex = i;
+  for (int p = 0; p < MAX_PAGES; p++)
+    for (int t = 0; t < MAX_TILES; t++) tileRuntime[p][t] = TileRuntime();
+  saveConfig();
+  pageDirty = true;
+  server.sendHeader("Location", "/");
   server.send(303);
 }
 
@@ -2849,6 +3780,7 @@ void handleExport() {
 
 void setupWebServer() {
   server.on("/", handleRoot);
+  server.on("/ha-test", handleHaTest);
   server.on("/page", handlePageManage);
   server.on("/save-device", HTTP_POST, handleSaveDevice);
   server.on("/save-flash", HTTP_POST, handleSaveFlash);
@@ -2856,11 +3788,19 @@ void setupWebServer() {
   server.on("/page/add", HTTP_POST, handlePageAdd);
   server.on("/page/rename", HTTP_POST, handlePageRename);
   server.on("/page/delete", HTTP_POST, handlePageDelete);
+  server.on("/page/reorder", HTTP_POST, handlePageReorder);
+  server.on("/page/order-reset", HTTP_POST, handlePageOrderReset);
+  server.on("/page/set-hidden", HTTP_POST, handlePageSetHidden);
   server.on("/tile/add", HTTP_POST, handleTileAdd);
+  server.on("/tile/add-bulk", HTTP_POST, handleTileAddBulk);
   server.on("/tile/delete", HTTP_POST, handleTileDelete);
   server.on("/tile/move", HTTP_POST, handleTileMove);
+  server.on("/tile/reorder", HTTP_POST, handleTileReorder);
   server.on("/tile/edit", handleTileEditForm);
   server.on("/tile/update", HTTP_POST, handleTileUpdate);
+  server.on("/ha/entities", handleHaEntities);
+  server.on("/ha/areas", handleHaAreas);
+  server.on("/ha/area-entities", handleHaAreaEntities);
   server.on("/export", handleExport);
   server.on("/import", HTTP_POST, handleImportComplete, handleImportUpload);
   server.begin();
@@ -2924,6 +3864,17 @@ void setup() {
     Serial.print("mDNS hostname: ");
     Serial.print(cfg.deviceName);
     Serial.println(".local");
+
+    // If the HA URL is still the built-in default, try to find HA on the
+    // LAN. Not persisted here - only saved once the user saves settings.
+    if (strcmp(cfg.haUrl, HA_URL_DEFAULT) == 0) {
+      String found;
+      if (discoverHaUrl(found)) {
+        strlcpy(cfg.haUrl, found.c_str(), sizeof(cfg.haUrl));
+        Serial.print("mDNS: discovered Home Assistant at ");
+        Serial.println(cfg.haUrl);
+      }
+    }
   } else {
     Serial.println("WiFi connection failed - check WIFI_SSID/WIFI_PASSWORD in secrets.h.");
   }
@@ -2937,6 +3888,14 @@ void loop() {
   server.handleClient();
   updateTimerState();
   updateFlashSequence();
+
+  // A page just hidden from the web UI (or a bad saved index) must not
+  // stay on screen - fall back to Home, which can never be hidden.
+  if (currentPageIndex < 0 || currentPageIndex >= cfg.pageCount ||
+      cfg.pages[currentPageIndex].hidden) {
+    currentPageIndex = 0;
+    pageDirty = true;
+  }
 
   static bool dialogWasShown = false;
 
@@ -2966,6 +3925,15 @@ void loop() {
 
   handleContinuousTouch();
   ensureWeather();
+
+  // Re-probe HA immediately when the Status page is opened, so its readout
+  // isn't up to a full check-interval stale.
+  static int haPageWatch = -1;
+  if (currentPageIndex != haPageWatch) {
+    haPageWatch = currentPageIndex;
+    if (strcmp(cfg.pages[currentPageIndex].type, "status") == 0) lastHaCheckMs = 0;
+  }
+  ensureHaCheck();
 
   if (rebootArmed && millis() - rebootArmedMs > REBOOT_CONFIRM_WINDOW_MS) {
     rebootArmed = false;

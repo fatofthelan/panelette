@@ -26,6 +26,7 @@ struct PageConfig {
   char name[24];        // display name, editable
   char type[12];        // "home" | "area" | "forecast" | "timers" | "status"
   bool deletable;
+  bool hidden;          // true = skipped in the on-device footer + swipe nav (Home/Status can't be hidden)
   uint8_t tileCount;
   TileConfig tiles[MAX_TILES];
 };
@@ -41,7 +42,6 @@ struct DeviceConfig {
   char uiTypeface[16]; // "classic" (built-in bitmap font) or a Free Font family key
   bool uiBoldText;      // faux-bold: draws text twice, offset by 1px
   char bulbColorKey[16]; // which preset the "on" bulb glow uses - see BULB_COLORS in the .ino
-  bool weatherLocationAuto; // true = location follows the selected time zone
   float weatherLat;
   float weatherLon;
   char weatherLocationName[40];
@@ -51,6 +51,7 @@ struct DeviceConfig {
   int flashPulseCount;     // number of full on-off cycles
   int flashBrightnessPct;  // dim phase target for light.* entities; "on" phase is always 100
   int timerPresetSec[5];   // editable Timers-page preset buttons, in seconds (supports sub-minute presets)
+  bool customPageOrder;    // false = auto (Home, areas, Forecast, Timers, Status); true = user drag order kept as-is
   uint8_t pageCount;
   PageConfig pages[MAX_PAGES];
 };
@@ -84,4 +85,16 @@ struct WebFontEntry {
   const char* label;
   const char* googleFontsParam;
   const char* cssFamily;
+};
+
+// HA connectivity, shown on the Status page and the web UI. In this header
+// (not the .ino) because haConnLabel() takes it as a parameter and the
+// Arduino auto-prototype block would otherwise reference it before it's
+// defined - see "auto-prototype gotcha" in CLAUDE.md.
+enum HaConnState {
+  HA_CONN_UNKNOWN,      // not probed yet this session
+  HA_CONN_UNCONFIGURED, // no URL or no token stored
+  HA_CONN_OK,           // GET /api/ returned 200
+  HA_CONN_AUTH_FAIL,    // 401/403 - token wrong or lacks scope
+  HA_CONN_UNREACHABLE   // no WiFi, connect/DNS failure, or other error
 };
