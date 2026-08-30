@@ -40,9 +40,10 @@ build-config changes.
   (`https://github.com/PaulStoffregen/XPT2046_Touchscreen.git`), not the
   PlatformIO registry. The registry build is old and its `begin()` takes no
   arguments; the sketch calls `ts.begin(touchSPI)` with an explicit SPIClass.
-- Flash usage is ~90% of the default partition table. If it grows, add
-  `board_build.partitions = min_spiffs.csv` (bigger app, smaller FS - fine,
-  `config.json` is tiny).
+- Partition table is `min_spiffs.csv` (`board_build.partitions`) - ~1.9 MB
+  app + ~190 KB LittleFS; app is at ~63%. Arduino IDE equivalent: Tools ->
+  Partition Scheme -> "Minimal SPIFFS". Changing it reformats LittleFS, so
+  the on-device config is lost - export/import around any partition change.
 - The `TOUCH_CS pin not defined` warning from TFT_eSPI at build time is
   expected and harmless - touch runs through XPT2046_Touchscreen on its own
   SPI bus (VSPI, pins 25/32/33/36), not through TFT_eSPI.
@@ -267,8 +268,10 @@ deliberately rather than converting to `.cpp`.
   block) to get proper VS Code IntelliSense - not done; build is fine as-is.
 - WebSocket live state updates: deferred, not ruled out (see the HA
   integration section for why).
-- No-build-tools install path (captive-portal WiFi onboarding + prebuilt
-  binary + ESP Web Tools flasher page): planned, see INSTRUCTIONS.md.
-- Flash is ~92% of the default app partition. If it tops out, switch to
-  `board_build.partitions = min_spiffs.csv` - note that reformats LittleFS,
-  so export config first.
+- **No-build-tools install path** (top roadmap item): captive-portal WiFi
+  onboarding (removes `secrets.h`), GitHub Releases with a merged
+  `firmware.bin`, and an ESP Web Tools page for one-click browser flashing.
+  Neither IDE is genuinely "easy" for a non-technical user; this is the
+  answer for them. PlatformIO stays the build-from-source path.
+- Partition is `min_spiffs.csv` (~1.9 MB app / 190 KB FS) - app is at
+  ~63%. Changing partitions reformats LittleFS: export config first.

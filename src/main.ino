@@ -32,8 +32,14 @@
 //       * "Add from a Home Assistant area" - group-aware checklist
 //
 // Deferred:
-//   - Captive-portal WiFi onboarding + prebuilt web-flasher (for a
-//     no-build-tools install path)
+//   - No-build-tools install path (so a non-technical HA user needs no
+//     IDE, no libraries, no User_Setup.h):
+//       * captive-portal WiFi onboarding (panel boots as its own AP,
+//         you join it and pick your network) - also removes secrets.h
+//       * GitHub Releases with merged firmware.bin (bootloader + parts +
+//         app), built on the min_spiffs partition
+//       * an ESP Web Tools page (GitHub Pages) - flash from Chrome/Edge
+//         with one click, no install
 //   - WebSocket live state updates (TLS handling + event-load concerns
 //     on this single-core, no-PSRAM hardware)
 // =========================================================
