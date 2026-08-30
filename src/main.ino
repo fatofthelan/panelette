@@ -15,7 +15,7 @@
 //   - Forecast page: 5-day weather (Open-Meteo, no API key)
 //   - Timers page: presets + custom time, optional light-flash on expiry
 //   - Status page: network + HA connection info (tap the HA row to
-//     re-test), dark/light theme toggle, reboot
+//     re-test), dark/light theme toggle, 180 screen-flip toggle, reboot
 //   - Web UI (grouped into cards: Device / Home Assistant / Weather /
 //     Pages / Timers / Backup): device settings, HA URL/token, per-page
 //     hide toggle, add/remove pages and tiles, drag-to-reorder tiles and
@@ -298,6 +298,13 @@ TileRuntime tileRuntime[MAX_PAGES][MAX_TILES];
 // we fell back to DHCP (shown on the Status page and in the web UI).
 bool staticIpFellBack = false;
 
+// Portrait either way; rotation 2 = USB on one side, 0 = flipped 180.
+// Touch stays on rotation 2 (its calibration was measured there) and
+// readTouchXY() point-reflects the mapped coords when flipped instead.
+void applyScreenRotation() {
+  tft.setRotation(cfg.flipScreen ? 0 : 2);
+}
+
 // Applied once at boot, before WiFi.begin(). No-op for DHCP or if the
 // stored values don't parse (setup() then also has a DHCP fallback).
 void applyNetworkConfig() {
@@ -466,6 +473,7 @@ void setDefaultConfig() {
   cfg.haToken[0] = '\0';
   cfg.darkTheme = true;
   cfg.use12Hour = false;
+  cfg.flipScreen = false;
   cfg.uiFontSize = 1;
   strlcpy(cfg.uiTypeface, "classic", sizeof(cfg.uiTypeface));
   cfg.uiBoldText = false;
@@ -584,6 +592,7 @@ bool loadConfig() {
   strlcpy(cfg.haToken, doc["haToken"] | "", sizeof(cfg.haToken));
   cfg.darkTheme = doc["darkTheme"] | true;
   cfg.use12Hour = doc["use12Hour"] | false;
+  cfg.flipScreen = doc["flipScreen"] | false;
   cfg.uiFontSize = (uint8_t)constrain((int)(doc["uiFontSize"] | 1), 0, 2);
   strlcpy(cfg.uiTypeface, doc["uiTypeface"] | "classic", sizeof(cfg.uiTypeface));
   cfg.uiBoldText = doc["uiBoldText"] | false;
@@ -663,6 +672,7 @@ void buildConfigJson(JsonDocument& doc) {
   doc["haToken"] = cfg.haToken;
   doc["darkTheme"] = cfg.darkTheme;
   doc["use12Hour"] = cfg.use12Hour;
+  doc["flipScreen"] = cfg.flipScreen;
   doc["uiFontSize"] = cfg.uiFontSize;
   doc["uiTypeface"] = cfg.uiTypeface;
   doc["uiBoldText"] = cfg.uiBoldText;
@@ -1304,6 +1314,14 @@ bool readTouchXY(int& x, int& y) {
   y = (int)map(rawY, TOUCH_Y_MIN, TOUCH_Y_MAX, 0, SCREEN_H);
   x = constrain(x, 0, SCREEN_W - 1);
   y = constrain(y, 0, SCREEN_H - 1);
+
+  // Touch stays on its rotation-2 calibration; when the display is flipped
+  // 180 (cfg.flipScreen) the whole panel is physically upside down, so the
+  // touch point is a 180 rotation of what the user means - undo it here.
+  if (cfg.flipScreen) {
+    x = SCREEN_W - 1 - x;
+    y = SCREEN_H - 1 - y;
+  }
   return true;
 }
 
@@ -2089,9 +2107,10 @@ void drawGridBackground() {
 const int STATUS_INFO_Y0 = HEADER_H + 14;                          // 48
 const int STATUS_ROW_H = 22;
 const int STATUS_HA_ROW_Y = STATUS_INFO_Y0 + 4 * STATUS_ROW_H;     // 136 - WiFi/IP/Signal/Host then HA
-const int STATUS_THEME_BTN_X = 12, STATUS_THEME_BTN_W = 216, STATUS_BTN_H = 34;
-const int STATUS_THEME_BTN_Y = STATUS_INFO_Y0 + 4 * STATUS_ROW_H + 26; // clears 5 info rows: WiFi/IP/Signal/Host/HA
-const int STATUS_REBOOT_BTN_Y = STATUS_THEME_BTN_Y + STATUS_BTN_H + 10;
+const int STATUS_THEME_BTN_X = 12, STATUS_THEME_BTN_W = 216, STATUS_BTN_H = 32;
+const int STATUS_THEME_BTN_Y  = STATUS_INFO_Y0 + 4 * STATUS_ROW_H + 20; // clears 5 info rows: WiFi/IP/Signal/Host/HA
+const int STATUS_FLIP_BTN_Y   = STATUS_THEME_BTN_Y + STATUS_BTN_H + 7;
+const int STATUS_REBOOT_BTN_Y = STATUS_FLIP_BTN_Y + STATUS_BTN_H + 7;   // bottom = 234 + 32 = 266, footer at 276
 
 void drawStatusPageFull() {
   PageConfig& pg = cfg.pages[currentPageIndex];
@@ -2140,13 +2159,24 @@ void drawStatusPageFull() {
   uiDrawString(tft, "tap to test", SCREEN_W - 12, y, 1);
   tft.setTextDatum(TL_DATUM);
 
+  // Narrower buttons than before (32px) to fit three - cap the label font
+  // so Large text size doesn't overflow them.
+  int sBtnFont = btnFont > 2 ? 2 : btnFont;
+
   // Theme toggle button
   tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_THEME_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_PANEL);
   if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_THEME_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_STROKE);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(COL_TEXT, COL_PANEL);
   uiDrawString(tft, cfg.darkTheme ? "Dark Mode: ON" : "Light Mode: ON",
-                 STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_THEME_BTN_Y + STATUS_BTN_H / 2, btnFont);
+                 STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_THEME_BTN_Y + STATUS_BTN_H / 2, sBtnFont);
+
+  // Flip screen toggle button
+  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_FLIP_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_PANEL);
+  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_FLIP_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_STROKE);
+  tft.setTextColor(COL_TEXT, COL_PANEL);
+  uiDrawString(tft, cfg.flipScreen ? "Screen: Flipped" : "Screen: Normal",
+                 STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_FLIP_BTN_Y + STATUS_BTN_H / 2, sBtnFont);
 
   // Reboot button
   uint16_t rbColor = rebootArmed ? fixColor565(TFT_RED) : COL_PANEL;
@@ -2154,7 +2184,7 @@ void drawStatusPageFull() {
   if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_REBOOT_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_STROKE);
   tft.setTextColor(rebootArmed ? fixColor565(TFT_WHITE) : COL_TEXT, rbColor);
   uiDrawString(tft, rebootArmed ? "Tap Again" : "Reboot Device",
-                 STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_REBOOT_BTN_Y + STATUS_BTN_H / 2, btnFont);
+                 STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_REBOOT_BTN_Y + STATUS_BTN_H / 2, sBtnFont);
   tft.setTextDatum(TL_DATUM);
 }
 
@@ -2497,6 +2527,14 @@ void handleStatusPageTap(int x, int y) {
   if (inButtonX && y >= STATUS_THEME_BTN_Y && y < STATUS_THEME_BTN_Y + STATUS_BTN_H) {
     cfg.darkTheme = !cfg.darkTheme;
     applyTheme(cfg.darkTheme);
+    saveConfig();
+    pageDirty = true;
+    return;
+  }
+
+  if (inButtonX && y >= STATUS_FLIP_BTN_Y && y < STATUS_FLIP_BTN_Y + STATUS_BTN_H) {
+    cfg.flipScreen = !cfg.flipScreen;
+    applyScreenRotation();
     saveConfig();
     pageDirty = true;
     return;
@@ -2928,6 +2966,8 @@ void handleRoot() {
   h += "<input name='areaName' value='" + htmlEscape(cfg.pages[0].name) + "' placeholder='e.g. Family Room'>";
   h += "<div class='check'><input type='checkbox' id='use12h' name='use12h'" + String(cfg.use12Hour ? " checked" : "") +
        "><label for='use12h' style='margin:0'>Use 12-hour clock (AM/PM)</label></div>";
+  h += "<div class='check'><input type='checkbox' id='flipScreen' name='flipScreen'" + String(cfg.flipScreen ? " checked" : "") +
+       "><label for='flipScreen' style='margin:0'>Flip screen 180&deg; (USB port on the other side)</label></div>";
   h += "<label>Time Zone</label><select name='timezone'>";
   for (int i = 0; i < TZ_TABLE_COUNT; i++) {
     h += "<option value='" + String(TZ_TABLE[i].key) + "'";
@@ -3350,6 +3390,8 @@ void handleSaveDevice() {
   if (newToken.length() > 0) strlcpy(cfg.haToken, newToken.c_str(), sizeof(cfg.haToken));
   strlcpy(cfg.pages[0].name, newAreaName.c_str(), sizeof(cfg.pages[0].name));
   cfg.use12Hour = server.hasArg("use12h"); // unchecked checkboxes are simply absent from the POST body
+  cfg.flipScreen = server.hasArg("flipScreen");
+  applyScreenRotation();
   strlcpy(cfg.timezone, sanitizeTimezoneKey(server.hasArg("timezone") ? server.arg("timezone") : String(cfg.timezone)).c_str(), sizeof(cfg.timezone));
   applyTimezone();
   cfg.uiFontSize = (uint8_t)constrain(server.hasArg("uiFontSize") ? server.arg("uiFontSize").toInt() : cfg.uiFontSize, 0, 2);
@@ -4008,6 +4050,7 @@ void setup() {
     setDefaultConfig();
     saveConfig();
   }
+  applyScreenRotation(); // now that cfg.flipScreen is known
   applyTheme(cfg.darkTheme);
   applyTimezone();
 

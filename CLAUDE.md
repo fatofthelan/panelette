@@ -48,6 +48,17 @@ build-config changes.
   expected and harmless - touch runs through XPT2046_Touchscreen on its own
   SPI bus (VSPI, pins 25/32/33/36), not through TFT_eSPI.
 
+## Screen orientation
+
+Portrait always. `cfg.flipScreen` toggles `tft.setRotation()` between 2
+(default) and 0 (180 flip, for USB-port-on-the-other-side mounting) via
+`applyScreenRotation()`. **Touch is left on its rotation-2 calibration** -
+`readTouchXY()` point-reflects the mapped x/y (`SCREEN_W-1-x`, `SCREEN_H-1-y`)
+when flipped, rather than re-calibrating. Toggle is on the Status page and
+in the web Device card. If a flip shows a small pixel offset/black band,
+that's a CGRAM-offset quirk on some CYD ST7789 units - add `TFT_ROW_OFFSET`
+/ `TFT_COL_OFFSET` build flags.
+
 ## Display hardware config - this is an ST7789 panel, not ILI9341
 
 Many CYDs ship with an ILI9341; **this one is ST7789** and needs BGR color

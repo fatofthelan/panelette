@@ -37,6 +37,7 @@ struct DeviceConfig {
   char haToken[200];
   bool darkTheme;
   bool use12Hour;
+  bool flipScreen;   // true = rotate the display 180 deg (USB port on the other side)
   char timezone[24];
   uint8_t uiFontSize; // 0 = Small, 1 = Medium (default), 2 = Large
   char uiTypeface[16]; // "classic" (built-in bitmap font) or a Free Font family key
