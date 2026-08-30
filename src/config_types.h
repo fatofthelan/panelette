@@ -52,6 +52,12 @@ struct DeviceConfig {
   int flashBrightnessPct;  // dim phase target for light.* entities; "on" phase is always 100
   int timerPresetSec[5];   // editable Timers-page preset buttons, in seconds (supports sub-minute presets)
   bool customPageOrder;    // false = auto (Home, areas, Forecast, Timers, Status); true = user drag order kept as-is
+  bool useStaticIp;        // false = DHCP (default); true = use the fields below (applied at boot, before WiFi.begin)
+  char ipAddr[16];         // dotted-quad strings, "" when unused
+  char subnet[16];
+  char gateway[16];
+  char dns1[16];           // optional
+  char dns2[16];           // optional
   uint8_t pageCount;
   PageConfig pages[MAX_PAGES];
 };

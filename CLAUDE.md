@@ -175,6 +175,14 @@ deliberately rather than converting to `.cpp`.
   The name is run through `sanitizeHostname()` (alnum + hyphens) on save.
 - `weatherLocationAuto` was **removed** - location is imported from HA's
   `/api/config` on save, and the lat/lon/name fields are always editable.
+- **Static IP**: `useStaticIp` + `ipAddr`/`subnet`/`gateway`/`dns1`/`dns2`
+  (dotted-quad strings). `applyNetworkConfig()` calls `WiFi.config()` in
+  `setup()` *before* `WiFi.begin()`. If a static config fails to associate,
+  `setup()` retries once on DHCP and sets `staticIpFellBack` (shown as
+  `!DHCP` on the Status page IP row and a banner in the web Network card) -
+  the stored config is left intact. `validateStaticNet()` checks dotted-quad
+  format, contiguous mask, and IP/gateway same-subnet. `/save-network`
+  reboots to apply.
 - `PageConfig.hidden`: page skipped in the on-device footer + swipe nav.
   Home and Status can never be hidden (`pageCanHide()` - Status is the
   only on-device route to reboot/theme). Nav uses `visiblePageCount()` /

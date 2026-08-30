@@ -44,6 +44,9 @@ so two panels on one network won't clash. You can rename it in the web UI.
   router uses one name for both bands, the panel will find the 2.4 GHz one
   automatically; if the bands have separate names, use the 2.4 GHz one.
 - WPA2 is recommended. WPA3-only networks may not connect.
+- The panel uses **DHCP** by default. A static IP can be set later in the web
+  UI (Network section) - if a static IP fails to connect, the panel falls
+  back to DHCP so you can still reach it to fix the values.
 
 ---
 

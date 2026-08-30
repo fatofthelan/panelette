@@ -20,6 +20,9 @@
 //     Pages / Timers / Backup): device settings, HA URL/token, per-page
 //     hide toggle, add/remove pages and tiles, drag-to-reorder tiles and
 //     pages, import/export config.json
+//   - Network card: DHCP or static IP (IP/subnet/gateway + optional DNS),
+//     validated, reboots to apply, DHCP fallback if a static IP won't
+//     associate. Web UI also has a Reboot button and an unsaved-edits guard.
 //   - HA setup helpers (all HTTP-only, each falls back to manual entry):
 //       * mDNS discovery of the HA URL on boot
 //       * /api/config import (time zone, location) on Save
@@ -92,6 +95,26 @@ String sanitizeHostname(const String& in) {
     out = buf;
   }
   return out;
+}
+
+static uint32_t ipToU32(const IPAddress& a) {
+  return ((uint32_t)a[0] << 24) | ((uint32_t)a[1] << 16) | ((uint32_t)a[2] << 8) | a[3];
+}
+
+// Validates a static-IP triple. Returns "" if OK, else a message for the UI.
+// (No cfg access - safe to keep near the other string helpers.)
+String validateStaticNet(const String& ip, const String& sn, const String& gw) {
+  IPAddress a, m, g;
+  if (!a.fromString(ip) || ipToU32(a) == 0) return "IP address is not valid.";
+  if (!m.fromString(sn)) return "Subnet mask is not valid.";
+  if (!g.fromString(gw) || ipToU32(g) == 0) return "Gateway is not valid.";
+
+  uint32_t mask = ipToU32(m);
+  uint32_t inv = ~mask;
+  if (mask == 0 || (inv & (inv + 1)) != 0) return "Subnet mask must be contiguous (e.g. 255.255.255.0).";
+  if ((ipToU32(a) & mask) != (ipToU32(g) & mask)) return "IP address and gateway are on different subnets.";
+  if (ipToU32(a) == ipToU32(g)) return "IP address and gateway can't be the same.";
+  return "";
 }
 
 // =========================================================
@@ -261,6 +284,21 @@ const char* timezonePosixByKey(const String& key) {
 
 DeviceConfig cfg;
 TileRuntime tileRuntime[MAX_PAGES][MAX_TILES];
+
+// Set true this session if a configured static IP failed to associate and
+// we fell back to DHCP (shown on the Status page and in the web UI).
+bool staticIpFellBack = false;
+
+// Applied once at boot, before WiFi.begin(). No-op for DHCP or if the
+// stored values don't parse (setup() then also has a DHCP fallback).
+void applyNetworkConfig() {
+  if (!cfg.useStaticIp) return;
+  IPAddress ip, sn, gw, d1, d2;
+  if (!ip.fromString(cfg.ipAddr) || !sn.fromString(cfg.subnet) || !gw.fromString(cfg.gateway)) return;
+  if (strlen(cfg.dns1) == 0 || !d1.fromString(cfg.dns1)) d1 = gw;
+  if (strlen(cfg.dns2) == 0 || !d2.fromString(cfg.dns2)) d2 = IPAddress((uint32_t)0);
+  WiFi.config(ip, gw, sn, d1, d2);
+}
 
 void applyTimezone() {
   setenv("TZ", timezonePosixByKey(cfg.timezone), 1);
@@ -441,6 +479,9 @@ void setDefaultConfig() {
 
   cfg.customPageOrder = false;
 
+  cfg.useStaticIp = false;
+  cfg.ipAddr[0] = cfg.subnet[0] = cfg.gateway[0] = cfg.dns1[0] = cfg.dns2[0] = '\0';
+
   cfg.pageCount = 4;
 
   const char* defIds[4]   = {"home", "forecast", "timers", "status"};
@@ -571,6 +612,13 @@ bool loadConfig() {
 
   cfg.customPageOrder = doc["customPageOrder"] | false;
 
+  cfg.useStaticIp = doc["useStaticIp"] | false;
+  strlcpy(cfg.ipAddr,  doc["ipAddr"]  | "", sizeof(cfg.ipAddr));
+  strlcpy(cfg.subnet,  doc["subnet"]  | "", sizeof(cfg.subnet));
+  strlcpy(cfg.gateway, doc["gateway"] | "", sizeof(cfg.gateway));
+  strlcpy(cfg.dns1,    doc["dns1"]    | "", sizeof(cfg.dns1));
+  strlcpy(cfg.dns2,    doc["dns2"]    | "", sizeof(cfg.dns2));
+
   JsonArray pagesArr = doc["pages"].as<JsonArray>();
   cfg.pageCount = 0;
   for (JsonObject p : pagesArr) {
@@ -625,6 +673,12 @@ void buildConfigJson(JsonDocument& doc) {
   JsonArray presetsOut = doc.createNestedArray("timerPresetSec");
   for (int i = 0; i < 5; i++) presetsOut.add(cfg.timerPresetSec[i]);
   doc["customPageOrder"] = cfg.customPageOrder;
+  doc["useStaticIp"] = cfg.useStaticIp;
+  doc["ipAddr"] = cfg.ipAddr;
+  doc["subnet"] = cfg.subnet;
+  doc["gateway"] = cfg.gateway;
+  doc["dns1"] = cfg.dns1;
+  doc["dns2"] = cfg.dns2;
 
   JsonArray pagesArr = doc.createNestedArray("pages");
   for (int i = 0; i < cfg.pageCount; i++) {
@@ -2050,7 +2104,11 @@ void drawStatusPageFull() {
   tft.setTextColor(COL_DIM, COL_BG);
   uiDrawString(tft, "IP", 12, y, rowFont);
   tft.setTextColor(COL_TEXT, COL_BG);
-  uiDrawString(tft, WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "-", 80, y, rowFont);
+  {
+    String ipText = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "-";
+    if (staticIpFellBack) ipText += " !DHCP";
+    uiDrawString(tft, ipText, 80, y, rowFont);
+  }
   y += STATUS_ROW_H;
 
   tft.setTextColor(COL_DIM, COL_BG);
@@ -2920,6 +2978,34 @@ void handleRoot() {
        "fetch('/ha-test').then(r=>r.text()).then(t=>{s.textContent=t;s.className='pill '+(t=='Connected'?'ok':'bad');b.disabled=false;})"
        ".catch(function(){s.textContent='Test failed';s.className='pill bad';b.disabled=false;});}</script>";
 
+  // ---- Network -------------------------------------------------------
+  h += "<section class='card'><h2>Network</h2>";
+  if (staticIpFellBack) {
+    h += "<div class='notice'>The configured static IP didn't connect - the panel is on DHCP for now (current IP: " +
+         htmlEscape(WiFi.localIP().toString()) + "). Fix the values below or switch to Automatic.</div>";
+  }
+  h += "<form method='POST' action='/save-network'>";
+  h += "<div class='check'><input type='radio' id='nmDhcp' name='netMode' value='dhcp'" + String(cfg.useStaticIp ? "" : " checked") +
+       "><label for='nmDhcp' style='margin:0'>Automatic (DHCP)</label></div>";
+  h += "<div class='check'><input type='radio' id='nmStatic' name='netMode' value='static'" + String(cfg.useStaticIp ? " checked" : "") +
+       "><label for='nmStatic' style='margin:0'>Static IP</label></div>";
+  h += "<div id='staticFields' style='display:none'>";
+  h += "<label>IP address</label><input name='ipAddr' value='" + htmlEscape(cfg.ipAddr) + "' placeholder='192.168.1.50'>";
+  h += "<label>Subnet mask</label><input name='subnet' value='" + htmlEscape(cfg.subnet) + "' placeholder='255.255.255.0'>";
+  h += "<label>Gateway</label><input name='gateway' value='" + htmlEscape(cfg.gateway) + "' placeholder='192.168.1.1'>";
+  h += "<div class='grid2' style='margin-top:8px'>";
+  h += "<div><label>DNS 1 (optional)</label><input name='dns1' value='" + htmlEscape(cfg.dns1) + "' placeholder='1.1.1.1'></div>";
+  h += "<div><label>DNS 2 (optional)</label><input name='dns2' value='" + htmlEscape(cfg.dns2) + "' placeholder='8.8.8.8'></div>";
+  h += "</div>";
+  h += "<div class='muted' style='margin-top:6px'>Leave DNS blank to use the gateway. If a static IP fails to connect, the panel falls back to DHCP so you can fix it.</div>";
+  h += "</div>";
+  h += "<button class='primary' type='submit'>Save network &amp; reboot</button>";
+  h += "</form>";
+  h += "<script>(function(){var f=document.getElementById('staticFields');"
+       "function u(){f.style.display=document.querySelector('input[name=netMode]:checked').value=='static'?'':'none';}"
+       "var r=document.getElementsByName('netMode');for(var i=0;i<r.length;i++)r[i].addEventListener('change',u);u();})();</script>";
+  h += "</section>";
+
   // ---- Pages ----------------------------------------------------------
   h += "<section class='card'><h2>Pages</h2>";
   {
@@ -2941,9 +3027,14 @@ void handleRoot() {
 
       if (i == 1) h += "<div id='pageList' class='sortable'>";
 
+      bool tilePage = (isHome || strcmp(pg.type, "area") == 0);
+
       h += "<div class='row' data-item='" + id + "'>";
       if (!isHome) h += "<span class='drag-handle' title='Drag to reorder'>&#x283F;</span>";
-      h += "<b>" + htmlEscape(pg.name) + "</b> <span class='muted'>(" + String(pg.type) + ")</span>";
+      h += "<b>" + htmlEscape(pg.name) + "</b> <span class='muted'>(" + String(pg.type);
+      if (tilePage) h += " &middot; " + String(pg.tileCount) + (pg.tileCount == 1 ? " tile" : " tiles");
+      h += ")</span>";
+      if (i == currentPageIndex) h += " <span class='pill ok'>on screen</span>";
       if (pg.hidden) h += " <span class='pill warn'>hidden</span>";
       h += "<br><a href='/page?id=" + id + "'>Manage tiles</a> &nbsp; ";
       h += "<form style='display:inline' method='POST' action='/page/rename'>";
@@ -3024,11 +3115,20 @@ void handleRoot() {
   h += "<label>Restore from a backup file</label>";
   h += "<input type='file' name='configFile' accept='.json'>";
   h += "<button class='primary' type='submit'>Import &amp; Reboot</button></form>";
+  h += "<h3>Restart</h3>";
+  h += "<form method='POST' action='/reboot' onsubmit=\"return confirm('Reboot the panel now?');\">";
+  h += "<button type='submit'>Reboot panel</button></form>";
   h += "</section>";
 
   h += sortableScript();
   h += "<script>(function(){var L=document.getElementById('pageList');"
        "if(L)makeSortable(L,function(o){postOrder('/page/reorder',o);});})();</script>";
+  // Warn before leaving with unsaved edits in the long settings forms.
+  h += "<script>(function(){['/save-device','/save-network'].forEach(function(a){"
+       "var f=document.querySelector('form[action=\"'+a+'\"]');if(!f)return;var dirty=false;"
+       "f.addEventListener('input',function(){dirty=true;});"
+       "f.addEventListener('submit',function(){dirty=false;});"
+       "window.addEventListener('beforeunload',function(e){if(dirty){e.preventDefault();e.returnValue='';}});});})();</script>";
 
   h += htmlFooter;
   server.send(200, "text/html", h);
@@ -3302,6 +3402,58 @@ void handleHaTest() {
   haConnState = s;
   lastHaCheckMs = millis();
   server.send(200, "text/plain", haConnLabel(s));
+}
+
+void sendRebootPage(const String& heading, const String& detail) {
+  String p = pageHeaderHtml("Rebooting");
+  p += "<h1>" + htmlEscape(heading) + "</h1><p>" + detail;
+  p += " The panel is unreachable for ~15 seconds. <a href='/'>Back to settings</a>.</p>";
+  p += htmlFooter;
+  server.send(200, "text/html", p);
+  delay(700);
+  ESP.restart();
+}
+
+void handleReboot() {
+  sendRebootPage("Rebooting", "");
+}
+
+void handleSaveNetwork() {
+  bool wantStatic = server.hasArg("netMode") && server.arg("netMode") == "static";
+
+  if (wantStatic) {
+    String ip = server.arg("ipAddr");   ip.trim();
+    String sn = server.arg("subnet");   sn.trim();
+    String gw = server.arg("gateway");  gw.trim();
+    String d1 = server.arg("dns1");     d1.trim();
+    String d2 = server.arg("dns2");     d2.trim();
+
+    String err = validateStaticNet(ip, sn, gw);
+    IPAddress t;
+    if (err == "" && d1.length() && !t.fromString(d1)) err = "Primary DNS is not a valid IP.";
+    if (err == "" && d2.length() && !t.fromString(d2)) err = "Secondary DNS is not a valid IP.";
+
+    if (err.length()) {
+      gSaveNotice = "Network settings not saved - " + err;
+      server.sendHeader("Location", "/");
+      server.send(303);
+      return;
+    }
+
+    cfg.useStaticIp = true;
+    strlcpy(cfg.ipAddr,  ip.c_str(), sizeof(cfg.ipAddr));
+    strlcpy(cfg.subnet,  sn.c_str(), sizeof(cfg.subnet));
+    strlcpy(cfg.gateway, gw.c_str(), sizeof(cfg.gateway));
+    strlcpy(cfg.dns1,    d1.c_str(), sizeof(cfg.dns1));
+    strlcpy(cfg.dns2,    d2.c_str(), sizeof(cfg.dns2));
+  } else {
+    cfg.useStaticIp = false;
+  }
+
+  saveConfig();
+  sendRebootPage("Network settings saved",
+                 wantStatic ? "Rebooting to apply the static IP. It may come back at the new address - check the panel's Status screen."
+                            : "Rebooting to switch back to DHCP.");
 }
 
 void handleSaveFlash() {
@@ -3783,6 +3935,8 @@ void setupWebServer() {
   server.on("/ha-test", handleHaTest);
   server.on("/page", handlePageManage);
   server.on("/save-device", HTTP_POST, handleSaveDevice);
+  server.on("/save-network", HTTP_POST, handleSaveNetwork);
+  server.on("/reboot", HTTP_POST, handleReboot);
   server.on("/save-flash", HTTP_POST, handleSaveFlash);
   server.on("/save-timers", HTTP_POST, handleSaveTimers);
   server.on("/page/add", HTTP_POST, handlePageAdd);
@@ -3839,10 +3993,27 @@ void setup() {
   applyTimezone();
 
   WiFi.mode(WIFI_STA);
+  applyNetworkConfig(); // static IP, if configured - must precede WiFi.begin()
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   unsigned long wifiStart = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
     delay(250);
+  }
+
+  // Safety net: a bad static IP (right format, wrong for this LAN) would
+  // otherwise lock the user out. Retry once on DHCP so the web UI stays
+  // reachable; the stored config is left as-is.
+  if (WiFi.status() != WL_CONNECTED && cfg.useStaticIp) {
+    Serial.println("Static IP failed to connect - falling back to DHCP for this session.");
+    staticIpFellBack = true;
+    WiFi.config((uint32_t)0, (uint32_t)0, (uint32_t)0);
+    WiFi.disconnect();
+    delay(100);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    wifiStart = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
+      delay(250);
+    }
   }
 
   if (WiFi.status() == WL_CONNECTED) {
