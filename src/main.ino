@@ -1862,7 +1862,7 @@ uint32_t haWsEntitySignature() {
   return h ^ (uint32_t)n;
 }
 
-bool haWsRawLog = true; // dump raw frames to Serial while we're bringing this up
+bool haWsRawLog = false; // set true to dump raw frames to Serial for debugging
 
 void haWsSendSubscribe() {
   String ents[MAX_PAGES * MAX_TILES];
