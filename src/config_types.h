@@ -36,6 +36,7 @@ struct DeviceConfig {
   char deviceName[24];
   char haUrl[80];
   char haToken[200];
+  bool haLiveUpdates;  // experimental: hold a HA WebSocket for push state updates instead of polling
   bool darkTheme;
   bool use12Hour;
   bool flipScreen;   // true = rotate the display 180 deg (USB port on the other side)

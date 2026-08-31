@@ -42,8 +42,10 @@
 //         app), built on the min_spiffs partition
 //       * an ESP Web Tools page (GitHub Pages) - flash from Chrome/Edge
 //         with one click, no install
-//   - WebSocket live state updates (TLS handling + event-load concerns
-//     on this single-core, no-PSRAM hardware)
+//   - WebSocket live state updates: prototype in progress on the
+//     feature/live-updates branch (cfg.haLiveUpdates + the haWs* module).
+//     ws:// only, subscribe_trigger on the tracked entity set, REST poll
+//     stays as the fallback.
 // =========================================================
 
 #include <WiFi.h>
@@ -56,6 +58,7 @@
 #include <ArduinoJson.h>
 #include <SPI.h>
 #include <XPT2046_Touchscreen.h>
+#include <WebSocketsClient.h> // experimental HA live-updates (feature/live-updates)
 #include <TFT_eSPI.h>
 // "Free Fonts" (Adafruit-GFX-style outline fonts bundled with TFT_eSPI):
 // TFT_eSPI.h -> gfxfont.h already #includes every one of these font files
@@ -513,6 +516,7 @@ void setDefaultConfig() {
   makeDefaultDeviceName(cfg.deviceName, sizeof(cfg.deviceName));
   strlcpy(cfg.haUrl, HA_URL_DEFAULT, sizeof(cfg.haUrl));
   cfg.haToken[0] = '\0';
+  cfg.haLiveUpdates = false;
   cfg.darkTheme = true;
   cfg.use12Hour = false;
   cfg.flipScreen = false;
@@ -636,6 +640,7 @@ bool loadConfig() {
   if (strlen(cfg.deviceName) == 0) makeDefaultDeviceName(cfg.deviceName, sizeof(cfg.deviceName));
   strlcpy(cfg.haUrl, doc["haUrl"] | HA_URL_DEFAULT, sizeof(cfg.haUrl));
   strlcpy(cfg.haToken, doc["haToken"] | "", sizeof(cfg.haToken));
+  cfg.haLiveUpdates = doc["haLiveUpdates"] | false;
   cfg.darkTheme = doc["darkTheme"] | true;
   cfg.use12Hour = doc["use12Hour"] | false;
   cfg.flipScreen = doc["flipScreen"] | false;
@@ -723,6 +728,7 @@ void buildConfigJson(JsonDocument& doc) {
   doc["deviceName"] = cfg.deviceName;
   doc["haUrl"] = cfg.haUrl;
   doc["haToken"] = cfg.haToken;
+  doc["haLiveUpdates"] = cfg.haLiveUpdates;
   doc["darkTheme"] = cfg.darkTheme;
   doc["use12Hour"] = cfg.use12Hour;
   doc["flipScreen"] = cfg.flipScreen;
@@ -1537,6 +1543,27 @@ bool haActivate(const char* entityId) {
   return code == 200 || code == 201;
 }
 
+// Applies one HA state object ({"state":..,"attributes":{..}}) to a tile
+// runtime. Shared by the REST poll and the WebSocket live-update path -
+// both receive the same shape (REST /api/states/<id>, WS trigger to_state).
+void applyEntityStateJson(JsonVariantConst st, TileRuntime& rt) {
+  const char* state = st["state"];
+  if (!state) return;
+
+  rt.lastRawState = String(state);
+  rt.unavailable = (rt.lastRawState == "unavailable" || rt.lastRawState == "unknown");
+  rt.on = (rt.lastRawState == "on");
+  rt.known = true;
+
+  JsonVariantConst brightnessVar = st["attributes"]["brightness"];
+  if (!brightnessVar.isNull()) {
+    int b255 = brightnessVar.as<int>();
+    rt.brightnessPct = constrain((int)((b255 * 100L + 127L) / 255L), 1, 100);
+  } else if (rt.on) {
+    rt.brightnessPct = 100;
+  }
+}
+
 // Fetches state (+ brightness, when present) for any entity into rt.
 bool haFetchEntityState(const char* entityId, TileRuntime& rt) {
   if (!haConfigured() || WiFi.status() != WL_CONNECTED) return false;
@@ -1560,23 +1587,9 @@ bool haFetchEntityState(const char* entityId, TileRuntime& rt) {
 
   StaticJsonDocument<512> doc;
   if (deserializeJson(doc, body)) return false;
+  if (!doc["state"]) return false;
 
-  const char* state = doc["state"];
-  if (!state) return false;
-
-  rt.lastRawState = String(state);
-  rt.unavailable = (rt.lastRawState == "unavailable" || rt.lastRawState == "unknown");
-  rt.on = (rt.lastRawState == "on");
-  rt.known = true;
-
-  JsonVariant brightnessVar = doc["attributes"]["brightness"];
-  if (!brightnessVar.isNull()) {
-    int b255 = brightnessVar.as<int>();
-    rt.brightnessPct = constrain((int)((b255 * 100L + 127L) / 255L), 1, 100);
-  } else if (rt.on) {
-    rt.brightnessPct = 100;
-  }
-
+  applyEntityStateJson(doc.as<JsonVariantConst>(), rt);
   return true;
 }
 
@@ -1786,6 +1799,210 @@ String prettyFromEntityId(const String& eid) {
     else if (s[i] == ' ') cap = true;
   }
   return s;
+}
+
+// =========================================================
+// HA WEBSOCKET LIVE UPDATES  (experimental - feature/live-updates)
+// =========================================================
+// When cfg.haLiveUpdates is on and the HA URL is plain http:// (so ws://),
+// hold a WebSocket to HA and push state changes straight into the tiles
+// instead of polling every 30 s. Anything that goes wrong (no connect,
+// bad token, https URL) just falls back to the existing REST polling.
+//
+// Uses subscribe_trigger with an explicit entity list (the union of every
+// light/switch/sensor tile across all pages) so the socket only carries
+// events we actually care about - not every state_changed in HA.
+WebSocketsClient haWs;
+enum HaWsPhase { HAWS_OFF, HAWS_CONNECTING, HAWS_AUTH, HAWS_READY, HAWS_FAILED };
+HaWsPhase haWsPhase = HAWS_OFF;
+int haWsSubId = 1;
+unsigned long haWsLastRxMs = 0;
+uint32_t haWsEntitySig = 0;      // FNV hash of the subscribed entity set
+unsigned long haWsSigCheckMs = 0;
+unsigned long haWsEventCount = 0; // diagnostics
+
+bool haWsUrlSupported() { return strncmp(cfg.haUrl, "http://", 7) == 0; }
+bool haWsActive() { return haWsPhase == HAWS_READY; }
+
+const char* haWsStatusText() {
+  if (!cfg.haLiveUpdates)       return "Off";
+  switch (haWsPhase) {
+    case HAWS_READY:      return "Live (WebSocket)";
+    case HAWS_CONNECTING: return "Connecting...";
+    case HAWS_AUTH:       return "Authenticating...";
+    case HAWS_FAILED:     return "Unavailable - polling";
+    default:              return "Starting...";
+  }
+}
+
+// Every distinct light/switch/sensor entity id across all pages.
+int haWsCollectEntities(String out[], int maxN) {
+  int n = 0;
+  for (int p = 0; p < cfg.pageCount && n < maxN; p++) {
+    for (int t = 0; t < cfg.pages[p].tileCount && n < maxN; t++) {
+      TileConfig& tl = cfg.pages[p].tiles[t];
+      if (strlen(tl.entityId) == 0) continue;
+      if (strcmp(tl.type, "light") && strcmp(tl.type, "switch") && strcmp(tl.type, "sensor")) continue;
+      bool dup = false;
+      for (int i = 0; i < n; i++) if (out[i] == tl.entityId) { dup = true; break; }
+      if (!dup) out[n++] = tl.entityId;
+    }
+  }
+  return n;
+}
+
+uint32_t haWsEntitySignature() {
+  String ents[MAX_PAGES * MAX_TILES];
+  int n = haWsCollectEntities(ents, MAX_PAGES * MAX_TILES);
+  uint32_t h = 2166136261u;
+  for (int i = 0; i < n; i++)
+    for (size_t j = 0; j < ents[i].length(); j++) h = (h ^ (uint8_t)ents[i][j]) * 16777619u;
+  return h ^ (uint32_t)n;
+}
+
+void haWsSendSubscribe() {
+  String ents[MAX_PAGES * MAX_TILES];
+  int n = haWsCollectEntities(ents, MAX_PAGES * MAX_TILES);
+  haWsEntitySig = haWsEntitySignature();
+  if (n == 0) return;
+
+  String msg = "{\"id\":" + String(haWsSubId++) +
+               ",\"type\":\"subscribe_trigger\",\"trigger\":{\"platform\":\"state\",\"entity_id\":[";
+  for (int i = 0; i < n; i++) { if (i) msg += ","; msg += "\"" + ents[i] + "\""; }
+  msg += "]}}";
+  haWs.sendTXT(msg);
+  Serial.printf("[haWs] subscribe_trigger: %d entities\n", n);
+}
+
+void haWsApplyTrigger(JsonVariantConst trig) {
+  const char* eid = trig["entity_id"];
+  JsonVariantConst toState = trig["to_state"];
+  if (!eid || toState.isNull()) return;
+
+  int hits = 0;
+  for (int p = 0; p < cfg.pageCount; p++) {
+    for (int t = 0; t < cfg.pages[p].tileCount; t++) {
+      if (strcmp(cfg.pages[p].tiles[t].entityId, eid) != 0) continue;
+      applyEntityStateJson(toState, tileRuntime[p][t]);
+      tileRuntime[p][t].cacheKey = ""; // redraw next tick / on page open
+      hits++;
+    }
+  }
+  haWsEventCount++;
+  Serial.printf("[haWs] %s -> %s (%d tiles)\n", eid, (const char*)(toState["state"] | "?"), hits);
+}
+
+void haWsHandleText(uint8_t* payload, size_t len) {
+  haWsLastRxMs = millis();
+
+  // Filter the parse down to just what we use - a raw state object can
+  // carry a lot of attributes and this runs on every socket message.
+  StaticJsonDocument<512> filter;
+  filter["type"] = true;
+  filter["event"]["variables"]["trigger"]["entity_id"] = true;
+  filter["event"]["variables"]["trigger"]["to_state"]["state"] = true;
+  filter["event"]["variables"]["trigger"]["to_state"]["attributes"]["brightness"] = true;
+
+  DynamicJsonDocument doc(1024);
+  if (deserializeJson(doc, payload, len, DeserializationOption::Filter(filter))) return;
+
+  const char* type = doc["type"];
+  if (!type) return;
+
+  if (strcmp(type, "auth_required") == 0) {
+    haWs.sendTXT(String("{\"type\":\"auth\",\"access_token\":\"") + cfg.haToken + "\"}");
+    haWsPhase = HAWS_AUTH;
+  } else if (strcmp(type, "auth_ok") == 0) {
+    Serial.println("[haWs] authenticated");
+    haWsPhase = HAWS_READY;
+    haWsSendSubscribe();
+  } else if (strcmp(type, "auth_invalid") == 0) {
+    Serial.println("[haWs] token rejected");
+    haWsPhase = HAWS_FAILED;
+    haWs.disconnect();
+  } else if (strcmp(type, "event") == 0) {
+    haWsApplyTrigger(doc["event"]["variables"]["trigger"]);
+  }
+}
+
+void haWsOnEvent(WStype_t type, uint8_t* payload, size_t len) {
+  switch (type) {
+    case WStype_CONNECTED:
+      Serial.println("[haWs] connected");
+      haWsPhase = HAWS_AUTH;
+      haWsLastRxMs = millis();
+      break;
+    case WStype_DISCONNECTED:
+      if (haWsPhase == HAWS_READY || haWsPhase == HAWS_AUTH) {
+        Serial.println("[haWs] disconnected - will retry");
+        haWsPhase = HAWS_CONNECTING;
+      }
+      break;
+    case WStype_TEXT:
+      haWsHandleText(payload, len);
+      break;
+    case WStype_ERROR:
+      Serial.println("[haWs] error");
+      break;
+    default:
+      break;
+  }
+}
+
+void haWsStop() {
+  if (haWsPhase == HAWS_OFF) return;
+  haWs.disconnect();
+  haWsPhase = HAWS_OFF;
+  Serial.println("[haWs] stopped");
+}
+
+void haWsBegin() {
+  if (haWsPhase != HAWS_OFF && haWsPhase != HAWS_FAILED) return;
+  if (!cfg.haLiveUpdates || !haConfigured()) return;
+  if (!haWsUrlSupported()) {
+    Serial.println("[haWs] HA URL is https:// - live updates need ws://, using polling");
+    haWsPhase = HAWS_FAILED;
+    return;
+  }
+
+  String u = String(cfg.haUrl).substring(7); // strip "http://"
+  int slash = u.indexOf('/');
+  if (slash >= 0) u = u.substring(0, slash);
+  int colon = u.indexOf(':');
+  String host = colon >= 0 ? u.substring(0, colon) : u;
+  int port = colon >= 0 ? u.substring(colon + 1).toInt() : 8123;
+
+  Serial.printf("[haWs] connecting %s:%d/api/websocket\n", host.c_str(), port);
+  haWs.begin(host.c_str(), port, "/api/websocket");
+  haWs.onEvent(haWsOnEvent);
+  haWs.setReconnectInterval(5000);
+  haWs.enableHeartbeat(20000, 5000, 2);
+  haWsPhase = HAWS_CONNECTING;
+}
+
+// Called every loop() tick. Owns the WS lifecycle: starts/stops with the
+// config toggle + WiFi, pumps the socket, and re-subscribes when the set
+// of tracked entities changes.
+void haWsLoop() {
+  static bool lastWant = false;
+  bool want = cfg.haLiveUpdates && haConfigured() && WiFi.status() == WL_CONNECTED;
+
+  if (want && !lastWant) haWsBegin();
+  if (!want && lastWant) haWsStop();
+  lastWant = want;
+
+  if (haWsPhase == HAWS_OFF || haWsPhase == HAWS_FAILED) return;
+
+  haWs.loop();
+
+  if (haWsPhase == HAWS_READY && millis() - haWsSigCheckMs > 2000) {
+    haWsSigCheckMs = millis();
+    if (haWsEntitySignature() != haWsEntitySig) {
+      Serial.println("[haWs] entity set changed - reconnecting");
+      haWs.disconnect();
+      haWsPhase = HAWS_CONNECTING;
+    }
+  }
 }
 
 // =========================================================
@@ -2675,6 +2892,9 @@ void pollCurrentPageTiles(bool force) {
   if (strcmp(pg.type, "home") != 0 && strcmp(pg.type, "area") != 0) return;
   if (!haConfigured() || WiFi.status() != WL_CONNECTED) return;
   if (sliderOverlayShown) return; // each fetch blocks - would stutter the drag
+  // Live updates keep every tile current; still allow the one forced poll
+  // on page-open so a freshly-shown page isn't blank right after connect.
+  if (haWsActive() && !force) return;
 
   for (int i = 0; i < pg.tileCount; i++) {
     TileConfig& tl = pg.tiles[i];
@@ -3323,6 +3543,11 @@ void handleRoot() {
     h += "<button type='button' onclick='haTest(this)'>Test</button></div>";
     h += "<div class='muted' style='margin-top:4px'>Tests the <em>saved</em> URL and token - Save first if you just changed them. A successful save also imports your time zone and location from HA.</div>";
   }
+  h += "<div class='check' style='margin-top:16px'><input type='checkbox' id='haLive' name='haLiveUpdates'" +
+       String(cfg.haLiveUpdates ? " checked" : "") + "><label for='haLive' style='margin:0'>Live updates (experimental) &mdash; hold a WebSocket for instant tile changes instead of 30s polling</label></div>";
+  h += "<div class='muted' style='margin-top:2px'>Status: " + htmlEscape(haWsStatusText());
+  if (haWsActive() && haWsEventCount > 0) h += " &middot; " + String(haWsEventCount) + " updates received";
+  h += ". Needs a plain http:// URL. Falls back to polling on any problem.</div>";
   h += "<button class='primary' type='submit'>Save Home Assistant</button>";
   h += "</section></form>";
 
@@ -3743,6 +3968,10 @@ void handleSaveDevice() {
   strlcpy(cfg.haUrl, newUrl.c_str(), sizeof(cfg.haUrl));
   if (newToken.length() > 0) strlcpy(cfg.haToken, newToken.c_str(), sizeof(cfg.haToken));
   strlcpy(cfg.pages[0].name, newAreaName.c_str(), sizeof(cfg.pages[0].name));
+  if (haForm) {
+    cfg.haLiveUpdates = server.hasArg("haLiveUpdates");
+    haWsStop(); // reconnect fresh with the current URL / token / toggle
+  }
   if (deviceForm) {
     cfg.use12Hour = server.hasArg("use12h"); // unchecked checkboxes are simply absent from the POST body
     cfg.flipScreen = server.hasArg("flipScreen");
@@ -4547,6 +4776,7 @@ void loop() {
 
   handleContinuousTouch();
   flushPendingHaCommand(); // run the tap's HA call now, outside the touch pass
+  haWsLoop();              // experimental: HA WebSocket push updates
   ensureWeather();
 
   // Re-probe HA immediately when the Status page is opened, so its readout
