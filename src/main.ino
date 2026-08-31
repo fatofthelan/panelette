@@ -1868,17 +1868,17 @@ void drawTimerTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, boo
   rt.cacheKey = combined;
 
   makeSpriteCard(sprTile, w, h);
+  const int pad = 12;
 
-  int tempFont = fontHeader();
-  sprTile.setTextDatum(TC_DATUM);
-  sprTile.setTextColor(COL_TEXT, COL_PANEL);
-  uiDrawString(sprTile, timeText, w / 2, 4, tempFont);
+  sprTile.setTextDatum(TL_DATUM);
+  sprTile.setTextColor(COL_DIM, COL_PANEL);
+  uiDrawFitted(sprTile, "Timer", pad, 10, w - pad - 26, 1);
 
-  int iconCx = wide ? w / 4 : w / 2;
-  // h-22 keeps the icon's bottom edge clear of the tile's bottom border
-  // at this scale - the previous h/2+14 put it right at the edge.
-  int iconCy = h - 22;
-  drawClockIcon(sprTile, iconCx, iconCy, timerRunning ? COL_ACCENT : COL_DIM, 1.3f);
+  drawClockIcon(sprTile, w - 22, 23, timerRunning ? COL_ACCENT : COL_DIM, 0.8f);
+
+  sprTile.setTextColor(timerRunning ? COL_ACCENT : COL_TEXT, COL_PANEL);
+  uiDrawFitted(sprTile, timeText, pad, h - 34, w - pad * 2, 4);
+  sprTile.setTextDatum(TL_DATUM);
 
   pushSpriteAndDelete(sprTile, x, y);
 }
@@ -1886,32 +1886,34 @@ void drawTimerTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, boo
 void drawWeatherTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool force) {
   TileRuntime& rt = tileRuntime[currentPageIndex][tileIdx];
 
-  String tempText = weatherKnown ? String((int)roundf(weatherCurrentTemp)) : "...";
+  String tempText = weatherKnown ? String((int)roundf(weatherCurrentTemp)) : "--";
 
   String combined = tempText + "|" + String(weatherCurrentCode) + "|" + String(weatherIsDay ? 1 : 0) + "|" + String(COL_PANEL) + "|" + String(COL_ACCENT);
   if (!force && combined == rt.cacheKey) return;
   rt.cacheKey = combined;
 
   makeSpriteCard(sprTile, w, h);
+  const int pad = 12;
 
-  // No label - the temperature takes that spot instead, and the icon
-  // (now full-color rather than dimmed, since nothing overlaps it
-  // anymore) gets most of the remaining space to be bigger.
-  int tempFont = fontHeader(); // 2 at Small/Medium, 4 at Large
-  sprTile.setTextDatum(TC_DATUM);
-  sprTile.setTextColor(COL_TEXT, COL_PANEL);
-  int numW = sprTile.textWidth(tempText, tempFont);
-  uiDrawString(sprTile, tempText, w / 2, 4, tempFont);
-  sprTile.drawCircle(w / 2 + numW / 2 + 5, tempFont >= 4 ? 9 : 7, 2, COL_TEXT);
-
-  int iconCx = wide ? w / 4 : w / 2;
-  // h-22 keeps the icon's bottom edge clear of the tile's bottom border
-  // at this scale - the previous h/2+14 put it right at the edge.
-  int iconCy = h - 22;
+  // Condition word as the label, temp big bottom-left, icon top-right -
+  // same composition as the light/timer tiles.
+  sprTile.setTextDatum(TL_DATUM);
+  sprTile.setTextColor(COL_DIM, COL_PANEL);
+  uiDrawFitted(sprTile, weatherKnown ? weatherCodeLabel(weatherCurrentCode) : "Weather",
+               pad, 10, w - pad - 30, 1);
 
   if (weatherKnown) {
-    drawWeatherIcon(sprTile, iconCx, iconCy, weatherCurrentCode, 1.3f, weatherIsDay, COL_PANEL);
+    drawWeatherIcon(sprTile, w - 25, 25, weatherCurrentCode, 0.8f, weatherIsDay, COL_PANEL);
   }
+
+  sprTile.setTextColor(COL_TEXT, COL_PANEL);
+  int ty = h - 36;
+  uiDrawFitted(sprTile, tempText, pad, ty, w - pad * 2 - 12, 4);
+  if (weatherKnown) {
+    int nw = uiTextWidth(sprTile, tempText, 4);
+    sprTile.drawCircle(pad + nw + 6, ty + 5, 3, COL_TEXT); // degree mark (FreeSans has no U+00B0)
+  }
+  sprTile.setTextDatum(TL_DATUM);
 
   pushSpriteAndDelete(sprTile, x, y);
 }
@@ -2061,19 +2063,12 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
 
   const uint16_t warmColor = resolveBulbColor();
   const int pad = 12; // clears the CARD_RADIUS corner
+  bool activeState = ((isLight || isSwitch) && rt.on);
 
-  // --- Label: top-left, small, dim; leaves the top-right corner free ---
+  // --- Label: full width across the top ---
   sprTile.setTextDatum(TL_DATUM);
   sprTile.setTextColor(COL_DIM, bgColor);
-  uiDrawFitted(sprTile, tl.label, pad, 10, w - pad - 24, 1);
-
-  // --- Type icon: small, inset from the top-right corner ---
-  int mIconX = w - 22;
-  int mIconY = 22;
-  bool activeState = ((isLight || isSwitch) && rt.on);
-  if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on, warmColor);
-  else if (isSwitch) drawMiniSwitch(sprTile, mIconX, mIconY, rt.on, COL_ACCENT);
-  else               drawMiniSensor(sprTile, mIconX, mIconY, COL_DIM);
+  uiDrawFitted(sprTile, tl.label, pad, 10, w - pad * 2, 1);
 
   // --- Value: bottom-left, the tile's focal point ---
   bool shortVal = (stateText.length() <= 4);
@@ -2082,8 +2077,15 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
                     : (rt.known || isSensor || strlen(tl.entityId) == 0) ? COL_TEXT : COL_DIM;
   sprTile.setTextColor(valColor, bgColor);
   int vy = h - (vFont == 4 ? 36 : 27);
-  uiDrawFitted(sprTile, stateText, pad, vy, w - pad * 2, vFont);
+  uiDrawFitted(sprTile, stateText, pad, vy, w - pad - 26, vFont);
   sprTile.setTextDatum(TL_DATUM);
+
+  // --- Type icon: bottom-right, out of the label's way ---
+  int mIconX = w - 19;
+  int mIconY = h - 19;
+  if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on, warmColor);
+  else if (isSwitch) drawMiniSwitch(sprTile, mIconX, mIconY, rt.on, COL_ACCENT);
+  else               drawMiniSensor(sprTile, mIconX, mIconY, COL_DIM);
 
   pushSpriteAndDelete(sprTile, x, y);
 }
