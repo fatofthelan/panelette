@@ -810,6 +810,7 @@ int touchTileIndex = -1;
 bool touchDown = false;
 bool touchMoved = false;
 bool sliderActive = false;
+bool sliderOverlayShown = false; // the big centred brightness slider is on screen
 unsigned long touchStartMs = 0;
 int touchStartX = 0, touchStartY = 0;
 int sliderPercent = 0;
@@ -2154,45 +2155,65 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   pushSpriteAndDelete(sprTile, x, y);
 }
 
-void drawSliderSprite(int tileIdx, int slot, bool wide, int percent, bool force) {
-  if (slot < 0) return;
-  PageConfig& pg = cfg.pages[currentPageIndex];
-  TileConfig& tl = pg.tiles[tileIdx];
-  TileRuntime& rt = tileRuntime[currentPageIndex][tileIdx];
+// =========================================================
+// BRIGHTNESS OVERLAY - the long-press-to-dim slider
+// =========================================================
+// The old slider lived inside the tile: ~44 px of travel for the whole
+// 0-100% range, which the resistive panel's jitter made frustrating to
+// land. Long-press now snaps up a large centred slider that owns the
+// screen until the finger lifts (~135 px of travel, ~0.7%/px), then the
+// page redraws. Drawn straight onto the TFT (no sprite) so it can sit on
+// top of the grid without disturbing it; only the value + fill repaint
+// during a drag.
+const int BRO_W = 182, BRO_H = 234;
+const int BRO_X = (SCREEN_W - BRO_W) / 2;
+const int BRO_Y = HEADER_H + 8;
+const int BRO_VAL_Y  = BRO_Y + 38;
+const int BRO_TRK_W  = 66;
+const int BRO_TRK_X  = SCREEN_W / 2 - BRO_TRK_W / 2;
+const int BRO_TRK_Y  = BRO_Y + 82;
+const int BRO_TRK_H  = BRO_Y + BRO_H - 18 - BRO_TRK_Y;
 
-  int x, y, w, h;
-  getSlotRect(slot, wide, x, y, w, h);
+void drawBrightnessOverlayValue(int percent) {
+  // Percentage readout.
+  tft.fillRect(BRO_X + 10, BRO_VAL_Y - 2, BRO_W - 20, 34, COL_PANEL);
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(COL_ACCENT, COL_PANEL);
+  uiDrawString(tft, String(percent) + "%", SCREEN_W / 2, BRO_VAL_Y, 4);
 
-  String combined = "SLIDER|" + String(percent);
-  if (!force && combined == rt.cacheKey) return;
-  rt.cacheKey = combined;
+  // Track fill (grows from the bottom) and the grab line at its top.
+  int ix = BRO_TRK_X + 4, iw = BRO_TRK_W - 8;
+  int iy = BRO_TRK_Y + 4, ih = BRO_TRK_H - 8;
+  int fillH = ih * percent / 100;
+  tft.fillRect(ix, iy, iw, ih - fillH, COL_PANEL);
+  if (fillH > 0) uiFillRR(tft, ix, iy + ih - fillH, iw, fillH, 9, COL_ACCENT, COL_PANEL);
 
-  makeSpriteCard(sprTile, w, h);
+  int hy = iy + ih - fillH;
+  tft.drawFastHLine(BRO_TRK_X - 5, hy, BRO_TRK_W + 10, COL_TEXT);
+  tft.drawFastHLine(BRO_TRK_X - 5, hy + 1, BRO_TRK_W + 10, COL_TEXT);
+}
 
-  sprTile.setTextDatum(TL_DATUM);
-  sprTile.setTextColor(COL_DIM, COL_PANEL);
-  uiDrawFitted(sprTile, tl.label, 6, 4, w - 50, fontTile());
+void drawBrightnessOverlay(const String& label, int percent) {
+  uiFillRR(tft, BRO_X, BRO_Y, BRO_W, BRO_H, 18, COL_PANEL, COL_BG);
+  uiStrokeRR(tft, BRO_X, BRO_Y, BRO_W, BRO_H, 18, COL_ACCENT, COL_PANEL);
 
-  sprTile.setTextDatum(TR_DATUM);
-  sprTile.setTextColor(COL_ACCENT, COL_PANEL);
-  uiDrawString(sprTile, String(percent) + "%", w - 6, 4, fontTile());
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(COL_DIM, COL_PANEL);
+  uiDrawFitted(tft, label, SCREEN_W / 2, BRO_Y + 12, BRO_W - 24, 2);
 
-  const int trackW = 22;
-  const int trackX = (w - trackW) / 2;
-  const int trackY = 18;
-  const int trackH = h - trackY - 8;
+  uiStrokeRR(tft, BRO_TRK_X, BRO_TRK_Y, BRO_TRK_W, BRO_TRK_H, 12, COL_STROKE, COL_PANEL);
+  drawBrightnessOverlayValue(percent);
+  tft.setTextDatum(TL_DATUM);
+}
 
-  uiStrokeRR(sprTile, trackX, trackY, trackW, trackH, 6, COL_STROKE, COL_PANEL);
-  int innerH = trackH - 4;
-  int fillH = (innerH * percent) / 100;
-  if (fillH > 0) {
-    uiFillRR(sprTile, trackX + 2, trackY + trackH - 2 - fillH, trackW - 4, fillH, 4, COL_ACCENT, COL_PANEL);
-  }
-  int handleY = trackY + trackH - 2 - fillH;
-  sprTile.drawFastHLine(trackX - 3, handleY, trackW + 6, COL_TEXT);
-
-  sprTile.setTextDatum(TL_DATUM);
-  pushSpriteAndDelete(sprTile, x, y);
+// Absolute screen Y -> 0-100, clamped to the visible track. Shared by the
+// touch handler and the drawing so they can't drift.
+int brightnessOverlayPctFromY(int y) {
+  int top = BRO_TRK_Y + 4;
+  int bot = BRO_TRK_Y + BRO_TRK_H - 4;
+  int cy = constrain(y, top, bot);
+  int span = max(1, bot - top);
+  return constrain(100 - ((cy - top) * 100) / span, 0, 100);
 }
 
 // =========================================================
@@ -2521,17 +2542,17 @@ void drawTimersPageFull() {
 }
 
 void updateGridTiles(bool force) {
+  // The brightness overlay owns the screen while it's up - repainting tiles
+  // underneath it would bleed through.
+  if (sliderOverlayShown) return;
+
   PageConfig& pg = cfg.pages[currentPageIndex];
   int slotOf[MAX_TILES];
   layoutPageTiles(pg, slotOf);
 
   for (int i = 0; i < pg.tileCount; i++) {
     bool wide = (pg.tiles[i].size == 2);
-    if (sliderActive && touchTileIndex == i) {
-      drawSliderSprite(i, slotOf[i], wide, sliderPercent, force);
-    } else {
-      drawTileSprite(i, slotOf[i], wide, force);
-    }
+    drawTileSprite(i, slotOf[i], wide, force);
   }
 }
 
@@ -2869,26 +2890,16 @@ void handleContinuousTouch() {
         sliderPercent = constrain(rt.brightnessPct, 0, 100);
         rt.cacheKey = "";
 
-        int slotOf[MAX_TILES];
-        layoutPageTiles(pg, slotOf);
-        drawSliderSprite(idx, slotOf[idx], tl.size == 2, sliderPercent, true);
+        drawBrightnessOverlay(tl.label, sliderPercent);
+        sliderOverlayShown = true;
         lastSliderSendMs = 0;
       }
     } else {
-      int slotOf[MAX_TILES];
-      layoutPageTiles(pg, slotOf);
-      int sx, sy, sw, sh;
-      getSlotRect(slotOf[idx], tl.size == 2, sx, sy, sw, sh);
-      int trackTopAbs = sy + 18;
-      int trackBottomAbs = sy + sh - 8;
-      int clampedY = constrain(y, trackTopAbs, trackBottomAbs);
-      int span = max(1, trackBottomAbs - trackTopAbs);
-      int pct = 100 - ((clampedY - trackTopAbs) * 100) / span;
-      pct = constrain(pct, 0, 100);
+      int pct = brightnessOverlayPctFromY(y);
 
       if (pct != sliderPercent) {
         sliderPercent = pct;
-        drawSliderSprite(idx, slotOf[idx], tl.size == 2, sliderPercent, true);
+        drawBrightnessOverlayValue(sliderPercent);
 
         unsigned long now = millis();
         if (now - lastSliderSendMs >= SLIDER_SEND_INTERVAL_MS) {
@@ -2915,10 +2926,8 @@ void handleContinuousTouch() {
         rt.on = sliderPercent > 0;
         rt.known = true;
         rt.cacheKey = "";
-
-        int slotOf[MAX_TILES];
-        layoutPageTiles(pg, slotOf);
-        drawTileSprite(idx, slotOf[idx], tl.size == 2, true);
+        sliderOverlayShown = false;
+        pageDirty = true; // full redraw wipes the overlay and restores the grid
       } else if (!touchMoved) {
         handleTileTap(idx);
       }
