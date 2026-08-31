@@ -39,8 +39,10 @@ struct DeviceConfig {
   bool use12Hour;
   bool flipScreen;   // true = rotate the display 180 deg (USB port on the other side)
   char timezone[24];
-  uint8_t uiFontSize; // 0 = Small, 1 = Medium (default), 2 = Large
-  char uiTypeface[16]; // "classic" (built-in bitmap font) or a Free Font family key
+  uint8_t uiFontSize;  // 0 = Small, 1 = Medium (default), 2 = Large
+  char uiTypeface[16]; // theme axis: "sans" (Noto Sans) | "mono" (Plex Mono, UPPERCASE + rules)
+  char colorScheme[12]; // theme axis: "cool" | "warm" | "phosphor" | "neutral"
+  char cornerStyle[10]; // theme axis: "rounded" | "square"
   bool uiBoldText;      // faux-bold: draws text twice, offset by 1px
   char bulbColorKey[16]; // which preset the "on" bulb glow uses - see BULB_COLORS in the .ino
   float weatherLat;

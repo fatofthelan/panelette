@@ -68,8 +68,10 @@
 #include <time.h>
 #include "config_types.h"
 #include "secrets.h" // WIFI_SSID / WIFI_PASSWORD - gitignored, copy from secrets.h.example
-#include "NotoSansB18.h" // anti-aliased .vlw fonts for the "smooth" typeface (theme B)
+#include "NotoSansB18.h" // anti-aliased .vlw fonts: Noto Sans (typeface "sans")
 #include "NotoSansB30.h"
+#include "PlexMono16.h"  //                          IBM Plex Mono (typeface "mono")
+#include "PlexMono26.h"
 
 // =========================================================
 // WIFI / HA DEFAULTS
@@ -165,7 +167,7 @@ const int GRID_Y[3]  = {42, 120, 198};
 const int CELL_W     = 108;
 const int CELL_H     = 70;
 const int CELL_GAP   = 8; // gap between the two columns
-const int CARD_RADIUS = 14; // rounded-rect corner for tiles / cards / buttons (theme B)
+// gCardRadius (rounded/square) is a runtime value - see applyCornerStyle()
 
 // =========================================================
 // THEME
@@ -199,32 +201,24 @@ static uint16_t fixColor565(uint16_t c) {
   return (uint16_t)(~c);
 }
 
-// Theme direction "B - Daylight": light-first, near-white cards on a cool
-// paper ground, one fresh teal accent, no card borders in light mode
-// (fill contrast carries it). RGB565 literals; trailing comment is ~8-bit.
-bool showTileBorder;
+// Colour scheme axis. Each has a dark + light variant; the 7 values are
+// BG / PANEL / PANEL_ALT / STROKE / TEXT / DIM / ACCENT (RGB565, pre-inversion).
+struct Palette { uint16_t bg, panel, alt, stroke, text, dim, accent; };
+struct ColorScheme { const char* key; const char* label; Palette dark, light; };
+const ColorScheme COLOR_SCHEMES[] = {
+  {"cool", "Cool (teal)",
+   {0x10A3,0x1905,0x2167,0x31C8,0xEF7E,0x8C94,0x2DF5}, {0xEF5D,0xFFFF,0xEF9E,0xD6DB,0x1926,0x638F,0x0CF1}},
+  {"warm", "Warm (amber)",
+   {0x10A1,0x39A5,0x4A27,0x6B0A,0xF79C,0xAD11,0xFCE5}, {0xE71A,0xFFDE,0xEF5B,0xD677,0x2924,0x83EE,0xB343}},
+  {"phosphor", "Phosphor (green / amber CRT)",
+   {0x0861,0x10A2,0x1903,0x29A6,0xD6FA,0x638D,0x5794}, {0x1060,0x1880,0x28E1,0x3962,0xF651,0x8B47,0xFDA9}},
+  {"neutral", "Neutral (grey)",
+   {0x10C3,0x2125,0x2987,0x39E8,0xE75D,0x8C93,0x6C77}, {0xEF7E,0xFFFF,0xF7BE,0xDF1C,0x18E4,0x634E,0x3B32}},
+};
+const int COLOR_SCHEMES_COUNT = sizeof(COLOR_SCHEMES) / sizeof(COLOR_SCHEMES[0]);
 
-void applyTheme(bool dark) {
-  if (dark) {
-    COL_BG        = fixColor565(0x10A3); // #12161c
-    COL_PANEL     = fixColor565(0x1905); // #1d232c
-    COL_PANEL_ALT = fixColor565(0x2167); // #262d38
-    COL_STROKE    = fixColor565(0x31C8); // #333b47
-    COL_TEXT      = fixColor565(0xEF7E); // #e8ecf0
-    COL_DIM       = fixColor565(0x8C94); // #8892a0
-    COL_ACCENT    = fixColor565(0x2DF5); // #2bbfa9  teal
-  } else {
-    COL_BG        = fixColor565(0xEF5D); // #e8ebee  cool paper
-    COL_PANEL     = fixColor565(0xFFFF); // #ffffff
-    COL_PANEL_ALT = fixColor565(0xEF9E); // #eef1f3
-    COL_STROKE    = fixColor565(0xD6DB); // #d3d8dc
-    COL_TEXT      = fixColor565(0x1926); // #182430  ink
-    COL_DIM       = fixColor565(0x638F); // #657079
-    COL_ACCENT    = fixColor565(0x0CF1); // #0e9c8a  teal
-  }
-  showTileBorder = dark;                 // light mode: no borders, fill contrast + shadow
-  COL_PANEL_LIT = blendColor565(COL_PANEL, COL_ACCENT, dark ? 22 : 12);
-}
+bool showTileBorder;
+void applyTheme(bool dark); // defined after DeviceConfig cfg (it reads cfg)
 
 // =========================================================
 // TIME ZONE
@@ -302,6 +296,27 @@ TileRuntime tileRuntime[MAX_PAGES][MAX_TILES];
 // we fell back to DHCP (shown on the Status page and in the web UI).
 bool staticIpFellBack = false;
 
+void applyTheme(bool dark) {
+  const ColorScheme* cs = &COLOR_SCHEMES[0];
+  for (int i = 0; i < COLOR_SCHEMES_COUNT; i++)
+    if (strcmp(cfg.colorScheme, COLOR_SCHEMES[i].key) == 0) { cs = &COLOR_SCHEMES[i]; break; }
+  const Palette& p = dark ? cs->dark : cs->light;
+
+  COL_BG        = fixColor565(p.bg);
+  COL_PANEL     = fixColor565(p.panel);
+  COL_PANEL_ALT = fixColor565(p.alt);
+  COL_STROKE    = fixColor565(p.stroke);
+  COL_TEXT      = fixColor565(p.text);
+  COL_DIM       = fixColor565(p.dim);
+  COL_ACCENT    = fixColor565(p.accent);
+
+  // Rounded + light = borderless cards with a drop shadow; otherwise a
+  // hairline border on every card.
+  bool rounded = (strcmp(cfg.cornerStyle, "square") != 0);
+  showTileBorder = !(rounded && !dark);
+  COL_PANEL_LIT = blendColor565(COL_PANEL, COL_ACCENT, dark ? 20 : 12);
+}
+
 // Portrait either way; rotation 2 = USB on one side, 0 = flipped 180.
 // Touch stays on rotation 2 (its calibration was measured there) and
 // readTouchXY() point-reflects the mapped coords when flipped instead.
@@ -341,102 +356,61 @@ int fontStatusRow() { return cfg.uiFontSize == 0 ? 1 : 2; }
 int fontStatusButton() { return cfg.uiFontSize == 0 ? 1 : (cfg.uiFontSize == 1 ? 2 : 4); }
 
 // =========================================================
-// UI TYPEFACE (experimental)
+// THEME AXES: typeface (sans / mono) + corner style. Colour scheme is
+// handled in applyTheme(). All three are pickable in the web UI.
 // =========================================================
-struct UiTypefaceEntry {
-  const char* key;
-  const char* label;
-};
-const UiTypefaceEntry UI_TYPEFACES[] = {
-  {"sans",      "Sans (default)"},
-  {"sans_bold", "Sans Bold"},
-  {"serif",     "Serif"},
-  {"mono",      "Mono"},
-  {"smooth",    "Smooth (anti-aliased)"},
-  {"classic",   "Classic (old bitmap font)"},
-};
-const int UI_TYPEFACES_COUNT = sizeof(UI_TYPEFACES) / sizeof(UI_TYPEFACES[0]);
-
-// "smooth" typeface: an anti-aliased .vlw font loaded onto both the screen
-// and the tile sprite. Two sizes - 18px body, 30px for fontNum >= 4.
-bool gSmoothFont = false;
+// The typeface is always an anti-aliased .vlw font. "sans" = Noto Sans
+// (Title Case, rounded feel); "mono" = IBM Plex Mono, which also turns on
+// UPPERCASE + hairline label rules for the "instrument" look.
+bool gSmoothFont = false;        // an AA font is loaded (always true after applyTypeface)
+bool gMono       = false;        // typeface == "mono"
+bool gForceUpper = false;        // uppercase every drawn string (mono only)
+bool gTileRule   = false;        // hairline rule under tile labels (mono only)
+int  gCardRadius = 14;           // rounded-rect corner: 14 rounded / 3 square
+const uint8_t* gFontBase = NotoSansB18_vlw;
+const uint8_t* gFontBig  = NotoSansB30_vlw;
 
 void applyTypeface() {
-  bool wantSmooth = (strcmp(cfg.uiTypeface, "smooth") == 0);
-  if (wantSmooth && !gSmoothFont) {
-    tft.loadFont(NotoSansB18_vlw);
-    sprTile.loadFont(NotoSansB18_vlw);
+  gMono = (strcmp(cfg.uiTypeface, "mono") == 0);
+  gForceUpper = gMono;
+  gTileRule   = gMono;
+
+  const uint8_t* base = gMono ? PlexMono16_vlw : NotoSansB18_vlw;
+  gFontBig            = gMono ? PlexMono26_vlw : NotoSansB30_vlw;
+
+  if (!gSmoothFont || base != gFontBase) {
+    if (gSmoothFont) { tft.unloadFont(); sprTile.unloadFont(); }
+    tft.loadFont(base);
+    sprTile.loadFont(base);
     gSmoothFont = true;
-  } else if (!wantSmooth && gSmoothFont) {
-    tft.unloadFont();
-    sprTile.unloadFont();
-    gSmoothFont = false;
+    gFontBase = base;
   }
 }
 
-const GFXfont* uiFreeFontForRole(int fontNum) {
-  bool big = (fontNum >= 4);
-  String tf(cfg.uiTypeface);
-  if (tf == "sans_bold") return big ? &FreeSansBold12pt7b : &FreeSansBold9pt7b;
-  if (tf == "serif")     return big ? &FreeSerif12pt7b     : &FreeSerif9pt7b;
-  if (tf == "mono")      return big ? &FreeMono12pt7b      : &FreeMono9pt7b;
-  return big ? &FreeSans12pt7b : &FreeSans9pt7b; // "sans" and any unrecognized value
+void applyCornerStyle() {
+  gCardRadius = (strcmp(cfg.cornerStyle, "square") == 0) ? 3 : 14;
 }
 
-// Every on-device text draw goes through this instead of calling
-// .drawString() directly, so the typeface/bold experiment applies
-// uniformly everywhere without touching each call site's own layout math.
-// fontNum keeps its existing meaning (1/2/4 from fontTile()/fontHeader()/
-// etc.) - used directly for "classic", or translated to a similar-size
-// Free Font otherwise.
-//
-// EXPERIMENTAL: Free Font glyph metrics don't exactly match the numbered
-// bitmap font's, and every tile/page layout in this project was pixel-
-// tuned against the numbered font specifically. Switching away from
-// "classic" may shift or clip text in spots we haven't hand-tuned for -
-// expected while experimenting, not necessarily a new bug.
+// Every on-device text draw goes through these. The active .vlw font is
+// always loaded (gFontBase); fontNum >= 4 swaps in the larger cut for the
+// duration of the call. gForceUpper (mono typeface) uppercases everything.
 template<typename T>
-void uiDrawString(T& d, const String& text, int x, int y, int fontNum) {
-  if (gSmoothFont) {
-    bool big = (fontNum >= 4);
-    if (big) d.loadFont(NotoSansB30_vlw);
-    d.drawString(text, x, y);
-    if (big) d.loadFont(NotoSansB18_vlw);
-    return;
-  }
-
-  bool classic = (strlen(cfg.uiTypeface) == 0) || strcmp(cfg.uiTypeface, "classic") == 0;
-
-  if (classic) {
-    if (cfg.uiBoldText) d.drawString(text, x + 1, y, fontNum);
-    d.drawString(text, x, y, fontNum);
-  } else {
-    d.setFreeFont(uiFreeFontForRole(fontNum));
-    if (cfg.uiBoldText) d.drawString(text, x + 1, y);
-    d.drawString(text, x, y);
-  }
+void uiDrawString(T& d, const String& textIn, int x, int y, int fontNum) {
+  String text = textIn;
+  if (gForceUpper) text.toUpperCase();
+  bool big = (fontNum >= 4);
+  if (big) d.loadFont(gFontBig);
+  d.drawString(text, x, y);
+  if (big) d.loadFont(gFontBase);
 }
 
-// Mirrors uiDrawString()'s own font-selection logic, so width measurement
-// stays correct regardless of which typeface is active - Free Fonts need
-// setFreeFont() called before textWidth() measures them correctly, same
-// as before actually drawing with them.
 template<typename T>
 int uiTextWidth(T& d, const String& text, int fontNum) {
-  if (gSmoothFont) {
-    bool big = (fontNum >= 4);
-    if (big) d.loadFont(NotoSansB30_vlw);
-    int w = d.textWidth(text);
-    if (big) d.loadFont(NotoSansB18_vlw);
-    return w;
-  }
-  bool classic = (strlen(cfg.uiTypeface) == 0) || strcmp(cfg.uiTypeface, "classic") == 0;
-  if (classic) {
-    return d.textWidth(text, fontNum);
-  } else {
-    d.setFreeFont(uiFreeFontForRole(fontNum));
-    return d.textWidth(text);
-  }
+  bool big = (fontNum >= 4);
+  if (big) d.loadFont(gFontBig);
+  int w = d.textWidth(text);
+  if (big) d.loadFont(gFontBase);
+  return w;
 }
 
 // Shortens text (dropping characters from the end, adding "...") until it
@@ -448,12 +422,7 @@ int uiTextWidth(T& d, const String& text, int fontNum) {
 // a separate draw call, since the font actually used can change here.
 template<typename T>
 void uiDrawFitted(T& d, const String& text, int x, int y, int maxWidth, int preferredFont, bool ellipsis = true) {
-  bool classic = (strlen(cfg.uiTypeface) == 0) || strcmp(cfg.uiTypeface, "classic") == 0;
   int useFont = preferredFont;
-
-  if (classic && preferredFont > 1 && uiTextWidth(d, text, useFont) > maxWidth) {
-    useFont = 1; // Classic has a genuinely smaller size to drop to; Free Fonts don't
-  }
 
   String fitted = text;
   if (uiTextWidth(d, fitted, useFont) > maxWidth) {
@@ -508,11 +477,13 @@ void setDefaultConfig() {
   makeDefaultDeviceName(cfg.deviceName, sizeof(cfg.deviceName));
   strlcpy(cfg.haUrl, HA_URL_DEFAULT, sizeof(cfg.haUrl));
   cfg.haToken[0] = '\0';
-  cfg.darkTheme = false; // theme B is light-first
+  cfg.darkTheme = false;
   cfg.use12Hour = false;
   cfg.flipScreen = false;
   cfg.uiFontSize = 1;
-  strlcpy(cfg.uiTypeface, "smooth", sizeof(cfg.uiTypeface)); // theme B: anti-aliased Noto Sans by default
+  strlcpy(cfg.uiTypeface, "sans", sizeof(cfg.uiTypeface));       // sans | mono
+  strlcpy(cfg.colorScheme, "cool", sizeof(cfg.colorScheme));     // cool | warm | phosphor | neutral
+  strlcpy(cfg.cornerStyle, "rounded", sizeof(cfg.cornerStyle));  // rounded | square
   cfg.uiBoldText = false;
   strlcpy(cfg.bulbColorKey, "amber", sizeof(cfg.bulbColorKey));
   strlcpy(cfg.timezone, "us_pacific", sizeof(cfg.timezone));
@@ -631,8 +602,11 @@ bool loadConfig() {
   cfg.use12Hour = doc["use12Hour"] | false;
   cfg.flipScreen = doc["flipScreen"] | false;
   cfg.uiFontSize = (uint8_t)constrain((int)(doc["uiFontSize"] | 1), 0, 2);
-  strlcpy(cfg.uiTypeface, doc["uiTypeface"] | "classic", sizeof(cfg.uiTypeface));
-  strlcpy(cfg.uiTypeface, "smooth", sizeof(cfg.uiTypeface)); // theme-b branch: force the AA font
+  strlcpy(cfg.uiTypeface, doc["uiTypeface"] | "sans", sizeof(cfg.uiTypeface));
+  if (strcmp(cfg.uiTypeface, "sans") != 0 && strcmp(cfg.uiTypeface, "mono") != 0)
+    strlcpy(cfg.uiTypeface, "sans", sizeof(cfg.uiTypeface)); // migrate old values
+  strlcpy(cfg.colorScheme, doc["colorScheme"] | "cool", sizeof(cfg.colorScheme));
+  strlcpy(cfg.cornerStyle, doc["cornerStyle"] | "rounded", sizeof(cfg.cornerStyle));
   cfg.uiBoldText = doc["uiBoldText"] | false;
   strlcpy(cfg.bulbColorKey, doc["bulbColorKey"] | "amber", sizeof(cfg.bulbColorKey));
   strlcpy(cfg.timezone, doc["timezone"] | "us_pacific", sizeof(cfg.timezone));
@@ -713,6 +687,8 @@ void buildConfigJson(JsonDocument& doc) {
   doc["flipScreen"] = cfg.flipScreen;
   doc["uiFontSize"] = cfg.uiFontSize;
   doc["uiTypeface"] = cfg.uiTypeface;
+  doc["colorScheme"] = cfg.colorScheme;
+  doc["cornerStyle"] = cfg.cornerStyle;
   doc["uiBoldText"] = cfg.uiBoldText;
   doc["bulbColorKey"] = cfg.bulbColorKey;
   doc["timezone"] = cfg.timezone;
@@ -1842,23 +1818,39 @@ void drawActionIcon(TFT_eSprite& spr, int cx, int cy, uint16_t color) {
 // Compact ~16px corner icons for the redesigned tile layout: the big
 // centred bulb/switch gave every tile the same "settings row" look, so
 // the type now sits small in a corner and the value carries the tile.
+// Compact ~16px corner icons. gMono -> outline-only 1px (state reads from
+// the accent colour); otherwise filled when "on".
 void drawMiniBulb(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t color) {
   uint16_t c = on ? color : COL_DIM;
-  if (on) spr.fillCircle(cx, cy - 2, 6, scaleColor565(color, 50));
+  if (on && !gMono) spr.fillCircle(cx, cy - 2, 6, scaleColor565(color, 50));
   spr.drawCircle(cx, cy - 2, 6, c);
   spr.drawFastHLine(cx - 4, cy + 5, 8, c);
   spr.drawFastHLine(cx - 3, cy + 7, 6, c);
 }
 void drawMiniSwitch(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t color) {
   uint16_t c = on ? color : COL_DIM;
-  spr.drawRoundRect(cx - 11, cy - 6, 22, 12, 6, c);
-  if (on) spr.fillRoundRect(cx - 10, cy - 5, 20, 10, 5, scaleColor565(color, 40));
-  spr.fillCircle(on ? cx + 5 : cx - 5, cy, 3, on ? fixColor565(TFT_WHITE) : COL_DIM);
+  if (gMono) {
+    spr.drawRect(cx - 11, cy - 6, 22, 12, c);
+    spr.drawRect(on ? cx + 1 : cx - 11, cy - 6, 10, 12, c);
+  } else {
+    spr.drawRoundRect(cx - 11, cy - 6, 22, 12, 6, c);
+    if (on) spr.fillRoundRect(cx - 10, cy - 5, 20, 10, 5, scaleColor565(color, 40));
+    spr.fillCircle(on ? cx + 5 : cx - 5, cy, 3, on ? fixColor565(TFT_WHITE) : COL_DIM);
+  }
 }
 void drawMiniSensor(TFT_eSprite& spr, int cx, int cy, uint16_t color) {
   spr.drawCircle(cx, cy, 6, COL_DIM);
   spr.drawLine(cx, cy, cx + 3, cy - 3, COL_DIM);
   spr.fillCircle(cx, cy, 1, COL_DIM);
+}
+
+// Tile label helper: dim, top-left, hard-cut; hairline rule under it in the
+// mono theme.
+void drawTileLabel(TFT_eSprite& spr, const String& text, int pad, int w, int maxWidth, uint16_t bg) {
+  spr.setTextDatum(TL_DATUM);
+  spr.setTextColor(COL_DIM, bg);
+  uiDrawFitted(spr, text, pad, 9, maxWidth, 1, false);
+  if (gTileRule) spr.drawFastHLine(pad, 27, w - pad * 2, COL_STROKE);
 }
 
 void makeSpriteCard(TFT_eSprite& spr, int w, int h, int fillColorOverride = -1) {
@@ -1874,8 +1866,8 @@ void makeSpriteCard(TFT_eSprite& spr, int w, int h, int fillColorOverride = -1) 
   // stale pixel garbage.
   spr.fillSprite(COL_BG);
   // Anti-aliased corners (theme B) - blends the curve against the page bg.
-  spr.fillSmoothRoundRect(0, 0, w, h, CARD_RADIUS, fillColor, COL_BG);
-  if (showTileBorder) spr.drawRoundRect(0, 0, w, h, CARD_RADIUS, COL_STROKE);
+  spr.fillSmoothRoundRect(0, 0, w, h, gCardRadius, fillColor, COL_BG);
+  if (showTileBorder) spr.drawRoundRect(0, 0, w, h, gCardRadius, COL_STROKE);
 }
 
 void pushSpriteAndDelete(TFT_eSprite& spr, int x, int y) {
@@ -1905,14 +1897,11 @@ void drawTimerTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, boo
   makeSpriteCard(sprTile, w, h);
   const int pad = 12;
 
-  sprTile.setTextDatum(TL_DATUM);
-  sprTile.setTextColor(COL_DIM, COL_PANEL);
-  uiDrawFitted(sprTile, "Timer", pad, 10, w - pad - 26, 1, false);
-
-  drawClockIcon(sprTile, w - 22, 23, timerRunning ? COL_ACCENT : COL_DIM, 0.8f);
+  drawTileLabel(sprTile, "Timer", pad, w, w - pad - 26, COL_PANEL);
+  drawClockIcon(sprTile, w - 22, h - 18, timerRunning ? COL_ACCENT : COL_DIM, 0.72f);
 
   sprTile.setTextColor(timerRunning ? COL_ACCENT : COL_TEXT, COL_PANEL);
-  uiDrawFitted(sprTile, timeText, pad, h - 34, w - pad * 2, 4);
+  uiDrawFitted(sprTile, timeText, pad, h - 34, w - pad - 24, 4);
   sprTile.setTextDatum(TL_DATUM);
 
   pushSpriteAndDelete(sprTile, x, y);
@@ -1930,19 +1919,15 @@ void drawWeatherTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, b
   makeSpriteCard(sprTile, w, h);
   const int pad = 12;
 
-  // Condition word as the label, temp big bottom-left, icon top-right -
-  // same composition as the light/timer tiles.
-  sprTile.setTextDatum(TL_DATUM);
-  sprTile.setTextColor(COL_DIM, COL_PANEL);
-  uiDrawFitted(sprTile, weatherKnown ? weatherCodeLabel(weatherCurrentCode) : "Weather",
-               pad, 10, w - pad - 30, 1, false);
+  drawTileLabel(sprTile, weatherKnown ? weatherCodeLabel(weatherCurrentCode) : String("Weather"),
+                pad, w, w - pad - 30, COL_PANEL);
 
   if (weatherKnown) {
-    drawWeatherIcon(sprTile, w - 25, 25, weatherCurrentCode, 0.8f, weatherIsDay, COL_PANEL);
+    drawWeatherIcon(sprTile, w - 25, h - 20, weatherCurrentCode, 0.72f, weatherIsDay, COL_PANEL);
   }
 
   sprTile.setTextColor(COL_TEXT, COL_PANEL);
-  int ty = h - 36;
+  int ty = h - 34;
   uiDrawFitted(sprTile, tempText, pad, ty, w - pad * 2 - 12, 4);
   if (weatherKnown) {
     int nw = uiTextWidth(sprTile, tempText, 4);
@@ -1994,14 +1979,10 @@ void drawSunTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool 
     uiDrawFitted(sprTile, riseT, c1, h - 24, w / 2 - 20, fontTile());
     uiDrawFitted(sprTile, setT,  c2, h - 24, w / 2 - 20, fontTile());
   } else {
-    // Single sunrise / sunset tile - same composition as the light tiles:
-    // label top-left, big time bottom-left, small glyph top-right.
     bool rise = (mode == 0);
     const int pad = 12;
-    sprTile.setTextDatum(TL_DATUM);
-    sprTile.setTextColor(COL_DIM, COL_PANEL);
-    uiDrawFitted(sprTile, rise ? "Sunrise" : "Sunset", pad, 10, w - pad - 24, 1, false);
-    drawSunHorizonIcon(sprTile, w - 21, 22, rise, COL_DIM);
+    drawTileLabel(sprTile, rise ? String("Sunrise") : String("Sunset"), pad, w, w - pad - 24, COL_PANEL);
+    drawSunHorizonIcon(sprTile, w - 21, h - 18, rise, COL_DIM);
     sprTile.setTextColor(COL_TEXT, COL_PANEL);
     uiDrawFitted(sprTile, rise ? riseT : setT, pad, h - 27, w - pad * 2, 2);
   }
@@ -2094,15 +2075,12 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   bool useLitBg = isLight && rt.on;
   uint16_t bgColor = useLitBg ? COL_PANEL_LIT : COL_PANEL;
   makeSpriteCard(sprTile, w, h, useLitBg ? (int)COL_PANEL_LIT : -1);
-  if (useLitBg) sprTile.drawSmoothRoundRect(0, 0, CARD_RADIUS, CARD_RADIUS - 1, w, h, COL_ACCENT, COL_PANEL_LIT); // teal rim
+  if (useLitBg) sprTile.drawRoundRect(0, 0, w, h, gCardRadius, COL_ACCENT); // accent rim when on
 
-  const int pad = 12; // clears the CARD_RADIUS corner
+  const int pad = 12;
   bool activeState = ((isLight || isSwitch) && rt.on);
 
-  // --- Label: full width across the top, hard-cut (no "...") ---
-  sprTile.setTextDatum(TL_DATUM);
-  sprTile.setTextColor(COL_DIM, bgColor);
-  uiDrawFitted(sprTile, tl.label, pad, 10, w - pad - 6, 1, false);
+  drawTileLabel(sprTile, tl.label, pad, w, w - pad - 6, bgColor);
 
   // --- Value: bottom-left, the tile's focal point ---
   bool shortVal = (stateText.length() <= 4);
@@ -2271,9 +2249,9 @@ void drawGridBackground() {
     bool wide = (pg.tiles[i].size == 2);
     int x, y, w, h;
     getSlotRect(slotOf[i], wide, x, y, w, h);
-    if (shadow) tft.fillSmoothRoundRect(x + 2, y + 3, w, h, CARD_RADIUS, shadowCol, COL_BG);
-    tft.fillSmoothRoundRect(x, y, w, h, CARD_RADIUS, COL_PANEL, COL_BG);
-    if (showTileBorder) tft.drawRoundRect(x, y, w, h, CARD_RADIUS, COL_STROKE);
+    if (shadow) tft.fillSmoothRoundRect(x + 2, y + 3, w, h, gCardRadius, shadowCol, COL_BG);
+    tft.fillSmoothRoundRect(x, y, w, h, gCardRadius, COL_PANEL, COL_BG);
+    if (showTileBorder) tft.drawRoundRect(x, y, w, h, gCardRadius, COL_STROKE);
   }
 }
 
@@ -2294,8 +2272,8 @@ const int STATUS_ROW2_BTN_Y = STATUS_ROW1_BTN_Y + STATUS_BTN_H + 12;  // 226  (R
 void drawStatusButton(int bx, int by, int bw, const String& label, bool danger) {
   uint16_t fill = danger ? fixColor565(0xF36D) : COL_PANEL;
   uint16_t txt  = danger ? fixColor565(0xFFFF) : COL_TEXT;
-  tft.fillRoundRect(bx, by, bw, STATUS_BTN_H, CARD_RADIUS, fill);
-  if (showTileBorder) tft.drawRoundRect(bx, by, bw, STATUS_BTN_H, CARD_RADIUS, COL_STROKE);
+  tft.fillRoundRect(bx, by, bw, STATUS_BTN_H, gCardRadius, fill);
+  if (showTileBorder) tft.drawRoundRect(bx, by, bw, STATUS_BTN_H, gCardRadius, COL_STROKE);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(txt, fill);
   uiDrawFitted(tft, label, bx + bw / 2, by + STATUS_BTN_H / 2, bw - 14, 2, false);
@@ -2443,8 +2421,8 @@ void drawTimersPageFull() {
     tft.setTextColor(COL_TEXT, COL_BG);
     uiDrawString(tft, buf, SCREEN_W / 2, HEADER_H + 90, 4);
 
-    tft.fillRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, CARD_RADIUS, COL_PANEL);
-    if (showTileBorder) tft.drawRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, CARD_RADIUS, COL_STROKE);
+    tft.fillRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, gCardRadius, COL_PANEL);
+    if (showTileBorder) tft.drawRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, gCardRadius, COL_STROKE);
     tft.setTextColor(COL_TEXT, COL_PANEL);
     uiDrawString(tft, "Cancel", TIMER_CANCEL_BTN_X + TIMER_CANCEL_BTN_W / 2, TIMER_CANCEL_BTN_Y + TIMER_CANCEL_BTN_H / 2, 2);
     tft.setTextDatum(TL_DATUM);
@@ -2457,8 +2435,8 @@ void drawTimersPageFull() {
   for (int i = 0; i < 5; i++) {
     int x, y, w, h;
     getSlotRect(i, false, x, y, w, h);
-    tft.fillRoundRect(x, y, w, h, CARD_RADIUS, COL_PANEL);
-    if (showTileBorder) tft.drawRoundRect(x, y, w, h, CARD_RADIUS, COL_STROKE);
+    tft.fillRoundRect(x, y, w, h, gCardRadius, COL_PANEL);
+    if (showTileBorder) tft.drawRoundRect(x, y, w, h, gCardRadius, COL_STROKE);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(COL_TEXT, COL_PANEL);
     String label = formatPresetLabel(cfg.timerPresetSec[i]);
@@ -2467,8 +2445,8 @@ void drawTimersPageFull() {
 
   int cx, cy, cw, ch;
   getSlotRect(5, false, cx, cy, cw, ch);
-  tft.fillRoundRect(cx, cy, cw, ch, CARD_RADIUS, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(cx, cy, cw, ch, CARD_RADIUS, COL_STROKE);
+  tft.fillRoundRect(cx, cy, cw, ch, gCardRadius, COL_PANEL);
+  if (showTileBorder) tft.drawRoundRect(cx, cy, cw, ch, gCardRadius, COL_STROKE);
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_DIM, COL_PANEL);
   uiDrawString(tft, "Flash Lights", cx + cw / 2, cy + 6, 1);
@@ -2741,8 +2719,8 @@ const int DIALOG_STOP_X = DIALOG_X + 10;
 const int DIALOG_RESTART_X = DIALOG_X + DIALOG_W - DIALOG_BTN_W - 10;
 
 void drawTimerExpiredDialog() {
-  tft.fillRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, CARD_RADIUS, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, CARD_RADIUS, COL_STROKE);
+  tft.fillRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, gCardRadius, COL_PANEL);
+  if (showTileBorder) tft.drawRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, gCardRadius, COL_STROKE);
 
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(COL_TEXT, COL_PANEL);
@@ -3131,16 +3109,23 @@ void handleRoot() {
   h += "<option value='1'" + String(cfg.uiFontSize == 1 ? " selected" : "") + ">Medium</option>";
   h += "<option value='2'" + String(cfg.uiFontSize == 2 ? " selected" : "") + ">Large</option>";
   h += "</select>";
-  h += "<label>Panel typeface</label><select name='uiTypeface'>";
-  for (int i = 0; i < UI_TYPEFACES_COUNT; i++) {
-    h += "<option value='" + String(UI_TYPEFACES[i].key) + "'";
-    if (String(cfg.uiTypeface) == UI_TYPEFACES[i].key) h += " selected";
-    h += ">" + String(UI_TYPEFACES[i].label) + "</option>";
+  h += "<h3>Theme</h3>";
+  h += "<label>Colour scheme</label><select name='colorScheme'>";
+  for (int i = 0; i < COLOR_SCHEMES_COUNT; i++) {
+    h += "<option value='" + String(COLOR_SCHEMES[i].key) + "'";
+    if (String(cfg.colorScheme) == COLOR_SCHEMES[i].key) h += " selected";
+    h += ">" + String(COLOR_SCHEMES[i].label) + "</option>";
   }
   h += "</select>";
-  h += "<div class='check'><input type='checkbox' id='uiBoldText' name='uiBoldText'" + String(cfg.uiBoldText ? " checked" : "") +
-       "><label for='uiBoldText' style='margin:0'>Bold / thicker stroke</label></div>";
-  h += "<div class='muted' style='margin-top:6px;'>Sans is the default. Classic is the old built-in bitmap font (blockier, but guaranteed to fit every layout).</div>";
+  h += "<label>Typeface</label><select name='uiTypeface'>";
+  h += "<option value='sans'" + String(strcmp(cfg.uiTypeface, "mono") ? " selected" : "") + ">Sans &mdash; Noto Sans, Title Case</option>";
+  h += "<option value='mono'" + String(!strcmp(cfg.uiTypeface, "mono") ? " selected" : "") + ">Mono &mdash; Plex Mono, UPPERCASE</option>";
+  h += "</select>";
+  h += "<label>Corners</label><select name='cornerStyle'>";
+  h += "<option value='rounded'" + String(strcmp(cfg.cornerStyle, "square") ? " selected" : "") + ">Rounded</option>";
+  h += "<option value='square'" + String(!strcmp(cfg.cornerStyle, "square") ? " selected" : "") + ">Square</option>";
+  h += "</select>";
+  h += "<div class='muted' style='margin-top:6px;'>Dark/light is separate &mdash; toggle it on the panel's Status screen. All fonts are anti-aliased.</div>";
   h += "</section>";
 
   h += "<section class='card'><h2>Home Assistant</h2>";
@@ -3553,14 +3538,20 @@ void handleSaveDevice() {
   cfg.uiFontSize = (uint8_t)constrain(server.hasArg("uiFontSize") ? server.arg("uiFontSize").toInt() : cfg.uiFontSize, 0, 2);
   if (server.hasArg("uiTypeface")) {
     String tf = server.arg("uiTypeface");
-    bool validTf = false;
-    for (int i = 0; i < UI_TYPEFACES_COUNT; i++) {
-      if (tf == UI_TYPEFACES[i].key) { validTf = true; break; }
-    }
-    if (validTf) strlcpy(cfg.uiTypeface, tf.c_str(), sizeof(cfg.uiTypeface));
+    if (tf == "sans" || tf == "mono") strlcpy(cfg.uiTypeface, tf.c_str(), sizeof(cfg.uiTypeface));
   }
-  applyTypeface(); // load/unload the smooth font to match
-  cfg.uiBoldText = server.hasArg("uiBoldText");
+  if (server.hasArg("colorScheme")) {
+    String c = server.arg("colorScheme");
+    for (int i = 0; i < COLOR_SCHEMES_COUNT; i++)
+      if (c == COLOR_SCHEMES[i].key) { strlcpy(cfg.colorScheme, c.c_str(), sizeof(cfg.colorScheme)); break; }
+  }
+  if (server.hasArg("cornerStyle")) {
+    String c = server.arg("cornerStyle");
+    if (c == "rounded" || c == "square") strlcpy(cfg.cornerStyle, c.c_str(), sizeof(cfg.cornerStyle));
+  }
+  applyTypeface();
+  applyCornerStyle();
+  applyTheme(cfg.darkTheme);
   // Bulb color picker and web UI font picker removed from the settings
   // page for now - cfg.bulbColorKey stays at its default ("amber") and
   // cfg.webFontChoice is unused (Poppins is hardcoded in pageHeaderHtml).
@@ -4210,7 +4201,8 @@ void setup() {
     saveConfig();
   }
   applyScreenRotation(); // now that cfg.flipScreen is known
-  applyTypeface();       // load the smooth .vlw font if selected
+  applyTypeface();       // load the .vlw font (sans / mono)
+  applyCornerStyle();
   applyTheme(cfg.darkTheme);
   applyTimezone();
 
