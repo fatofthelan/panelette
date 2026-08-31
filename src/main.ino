@@ -816,6 +816,32 @@ int touchStartX = 0, touchStartY = 0;
 int sliderPercent = 0;
 int sliderAnchorY = 0;    // touch Y when the slider engaged
 int sliderAnchorPct = 0;  // brightness at that moment - drag is relative to here
+bool sliderDragged = false; // finger actually moved after the overlay appeared
+
+// A tile tap queues its HA call here instead of making the (synchronous,
+// ~100-400 ms) HTTP request inline - that stall used to land right in the
+// release-debounce window and let contact bounce double-toggle the tile.
+// loop() drains this one slot right after the touch pass.
+enum PendingHaKind { PHA_NONE, PHA_ONOFF, PHA_ACTIVATE, PHA_BRIGHTNESS };
+PendingHaKind pendingHaKind = PHA_NONE;
+char pendingHaEntity[48] = "";
+bool pendingHaOn = false;
+int  pendingHaPct = 0;
+
+void queueHaOnOff(const char* entityId, bool on) {
+  strlcpy(pendingHaEntity, entityId, sizeof(pendingHaEntity));
+  pendingHaOn = on;
+  pendingHaKind = PHA_ONOFF;
+}
+void queueHaActivate(const char* entityId) {
+  strlcpy(pendingHaEntity, entityId, sizeof(pendingHaEntity));
+  pendingHaKind = PHA_ACTIVATE;
+}
+void queueHaBrightness(const char* entityId, int pct) {
+  strlcpy(pendingHaEntity, entityId, sizeof(pendingHaEntity));
+  pendingHaPct = pct;
+  pendingHaKind = PHA_BRIGHTNESS;
+}
 
 // Horizontal swipe tracking (separate from the tile long-press tracker;
 // only armed when a press starts outside any tile, i.e. on empty grid
@@ -2710,7 +2736,7 @@ void handleTileTap(int tileIdx) {
     actionFlashStartMs = millis();
     rt.cacheKey = "";
     drawTileSprite(tileIdx, slotOfTap[tileIdx], tl.size == 2, true);
-    haActivate(tl.entityId);
+    queueHaActivate(tl.entityId);
     return;
   }
 
@@ -2721,7 +2747,7 @@ void handleTileTap(int tileIdx) {
 
   drawTileSprite(tileIdx, slotOfTap[tileIdx], tl.size == 2, true);
 
-  haSendCommand(tl.entityId, newState);
+  queueHaOnOff(tl.entityId, newState);
 }
 
 void handleStatusPageTap(int x, int y) {
@@ -2871,10 +2897,20 @@ void handleContinuousTouch() {
       if (lostSinceMs != 0 && millis() - downSinceMs < 40) { wasDown = true; return; }
       lostSinceMs = 0;
 
-      int pct = brightnessOverlayPctFromDrag(y);
-      if (pct != sliderPercent) {
-        sliderPercent = pct;
-        drawBrightnessOverlayValue(sliderPercent);
+      // Don't move the value until the finger has clearly travelled - that
+      // way a still "long press" stays a tap. Re-anchor at that point so
+      // the value doesn't jump when the drag starts.
+      if (!sliderDragged && abs(y - sliderAnchorY) > 14) {
+        sliderDragged = true;
+        sliderAnchorY = y;
+        sliderAnchorPct = sliderPercent;
+      }
+      if (sliderDragged) {
+        int pct = brightnessOverlayPctFromDrag(y);
+        if (pct != sliderPercent) {
+          sliderPercent = pct;
+          drawBrightnessOverlayValue(sliderPercent);
+        }
       }
       wasDown = true;
       return;
@@ -2885,12 +2921,13 @@ void handleContinuousTouch() {
     if (lostSinceMs == 0) lostSinceMs = millis();
     if (millis() - lostSinceMs < SLIDER_RELEASE_GRACE_MS) { wasDown = true; return; }
 
-    // Sustained release: tear the overlay down and repaint the page *now*,
-    // then push the final brightness (that POST can block for a moment).
+    // Sustained release. If the finger never actually moved, the "long
+    // press" was really just a slow tap - dismiss the overlay and let it
+    // toggle the tile instead of stealing the tap.
     lostSinceMs = 0;
+    bool dragged = sliderDragged;
     int sendPct = sliderPercent;
-    String sendEntity = valid ? String(pg.tiles[idx].entityId) : String();
-    if (valid) {
+    if (valid && dragged) {
       TileRuntime& rt = tileRuntime[currentPageIndex][idx];
       rt.brightnessPct = sendPct;
       rt.on = sendPct > 0;
@@ -2899,15 +2936,19 @@ void handleContinuousTouch() {
     }
     sliderActive = false;
     sliderOverlayShown = false;
+    sliderDragged = false;
     touchDown = false;
-    touchTileIndex = -1;
     touchMoved = false;
     swipeCandidate = false;
     wasDown = false;
     lastTouchReleaseMs = millis();
 
-    drawCurrentPageFull(); // overlay gone immediately, before the network wait
-    if (sendEntity.length() > 0) haSendBrightness(sendEntity.c_str(), sendPct);
+    drawCurrentPageFull(); // overlay gone immediately
+    if (valid) {
+      if (dragged) queueHaBrightness(pg.tiles[idx].entityId, sendPct);
+      else         handleTileTap(idx); // still "long press" -> treat as a tap/toggle
+    }
+    touchTileIndex = -1;
     return;
   }
 
@@ -2950,6 +2991,7 @@ void handleContinuousTouch() {
 
     if (isLight && !touchMoved && (millis() - touchStartMs) >= LONG_PRESS_MS) {
       sliderActive = true;
+      sliderDragged = false;
       TileRuntime& rt = tileRuntime[currentPageIndex][idx];
       sliderPercent = constrain(rt.brightnessPct, 0, 100);
       sliderAnchorY = y;
@@ -4399,6 +4441,18 @@ void setup() {
   pageDirty = true;
 }
 
+// Drains the one-slot tap command queue. Called from loop() right after the
+// touch pass so the blocking POST never sits between a release and the
+// contact-bounce that follows it.
+void flushPendingHaCommand() {
+  if (pendingHaKind == PHA_NONE) return;
+  PendingHaKind k = pendingHaKind;
+  pendingHaKind = PHA_NONE;
+  if (k == PHA_ONOFF)           haSendCommand(pendingHaEntity, pendingHaOn);
+  else if (k == PHA_ACTIVATE)   haActivate(pendingHaEntity);
+  else if (k == PHA_BRIGHTNESS) haSendBrightness(pendingHaEntity, pendingHaPct);
+}
+
 void loop() {
   server.handleClient();
   updateTimerState();
@@ -4439,6 +4493,7 @@ void loop() {
   }
 
   handleContinuousTouch();
+  flushPendingHaCommand(); // run the tap's HA call now, outside the touch pass
   ensureWeather();
 
   // Re-probe HA immediately when the Status page is opened, so its readout
