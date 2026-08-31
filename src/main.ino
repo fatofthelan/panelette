@@ -2238,84 +2238,63 @@ void drawGridBackground() {
 
 // Shared between drawing and touch hit-testing so the two can never drift
 // out of sync with each other.
-const int STATUS_INFO_Y0 = HEADER_H + 14;                          // 48
-const int STATUS_ROW_H = 22;
-const int STATUS_HA_ROW_Y = STATUS_INFO_Y0 + 4 * STATUS_ROW_H;     // 136 - WiFi/IP/Signal/Host then HA
-const int STATUS_THEME_BTN_X = 12, STATUS_THEME_BTN_W = 216, STATUS_BTN_H = 32;
-const int STATUS_THEME_BTN_Y  = STATUS_INFO_Y0 + 4 * STATUS_ROW_H + 20; // clears 5 info rows: WiFi/IP/Signal/Host/HA
-const int STATUS_FLIP_BTN_Y   = STATUS_THEME_BTN_Y + STATUS_BTN_H + 7;
-const int STATUS_REBOOT_BTN_Y = STATUS_FLIP_BTN_Y + STATUS_BTN_H + 7;   // bottom = 234 + 32 = 266, footer at 276
+// 4 info rows (WiFi / IP / Host / HA), then Theme + Flip side by side,
+// then a full-width Reboot button.
+const int STATUS_INFO_Y0  = HEADER_H + 20;                     // 54
+const int STATUS_ROW_H    = 27;
+const int STATUS_HA_ROW_Y = STATUS_INFO_Y0 + 3 * STATUS_ROW_H; // 135
+const int STATUS_BTN_H     = 34;
+const int STATUS_BTN_FULL_X = 12, STATUS_BTN_FULL_W = 216;
+const int STATUS_BTN_L_X   = 12,  STATUS_BTN_HALF_W = 103;
+const int STATUS_BTN_R_X   = 125;
+const int STATUS_ROW1_BTN_Y = STATUS_INFO_Y0 + 4 * STATUS_ROW_H + 18; // 180  (Theme | Flip)
+const int STATUS_ROW2_BTN_Y = STATUS_ROW1_BTN_Y + STATUS_BTN_H + 12;  // 226  (Reboot); bottom 260
+
+void drawStatusButton(int bx, int by, int bw, const String& label, bool danger) {
+  uint16_t fill = danger ? fixColor565(0xF36D) : COL_PANEL;
+  uint16_t txt  = danger ? fixColor565(0xFFFF) : COL_TEXT;
+  tft.fillRoundRect(bx, by, bw, STATUS_BTN_H, CARD_RADIUS, fill);
+  if (showTileBorder) tft.drawRoundRect(bx, by, bw, STATUS_BTN_H, CARD_RADIUS, COL_STROKE);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(txt, fill);
+  uiDrawFitted(tft, label, bx + bw / 2, by + STATUS_BTN_H / 2, bw - 14, 2, false);
+  tft.setTextDatum(TL_DATUM);
+}
+
+void drawStatusRow(int idx, const char* key, const String& val, uint16_t valColor) {
+  int ry = STATUS_INFO_Y0 + idx * STATUS_ROW_H;
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(COL_DIM, COL_BG);
+  uiDrawString(tft, key, 14, ry, 2);
+  tft.setTextColor(valColor, COL_BG);
+  uiDrawFitted(tft, val, 86, ry, SCREEN_W - 86 - 14, 2, false);
+}
 
 void drawStatusPageFull() {
-  PageConfig& pg = cfg.pages[currentPageIndex];
   tft.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H - FOOTER_H, COL_BG);
 
-  int rowFont = fontStatusRow();
-  int btnFont = fontStatusButton();
+  bool wifi = (WiFi.status() == WL_CONNECTED);
 
-  int y = STATUS_INFO_Y0;
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, "WiFi", 12, y, rowFont);
-  tft.setTextColor(COL_TEXT, COL_BG);
-  uiDrawString(tft, WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected", 80, y, rowFont);
-  y += STATUS_ROW_H;
-
-  tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, "IP", 12, y, rowFont);
-  tft.setTextColor(COL_TEXT, COL_BG);
+  drawStatusRow(0, "WiFi", wifi ? (String(WiFi.RSSI()) + " dBm") : String("Not connected"), COL_TEXT);
   {
-    String ipText = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "-";
-    if (staticIpFellBack) ipText += " !DHCP";
-    uiDrawString(tft, ipText, 80, y, rowFont);
+    String ipText = wifi ? WiFi.localIP().toString() : String("-");
+    if (staticIpFellBack) ipText += "  !DHCP";
+    drawStatusRow(1, "IP", ipText, COL_TEXT);
   }
-  y += STATUS_ROW_H;
+  drawStatusRow(2, "Host", String(cfg.deviceName) + ".local", COL_TEXT);
 
-  tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, "Signal", 12, y, rowFont);
-  tft.setTextColor(COL_TEXT, COL_BG);
-  uiDrawString(tft, WiFi.status() == WL_CONNECTED ? (String(WiFi.RSSI()) + " dBm") : "-", 80, y, rowFont);
-  y += STATUS_ROW_H;
+  uint16_t haColor = (haConnState == HA_CONN_OK) ? fixColor565(0x5E91)          // green
+                   : (haConnState == HA_CONN_AUTH_FAIL ||
+                      haConnState == HA_CONN_UNREACHABLE) ? fixColor565(0xF36D) // red
+                   : COL_DIM;
+  drawStatusRow(3, "HA", haConnLabel(haConnState), haColor);
 
-  tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, "Host", 12, y, rowFont);
-  tft.setTextColor(COL_TEXT, COL_BG);
-  uiDrawString(tft, String(cfg.deviceName) + ".local", 80, y, rowFont);
-  y += STATUS_ROW_H;
-
-  tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, "HA", 12, y, rowFont);
-  tft.setTextColor(COL_TEXT, COL_BG);
-  uiDrawFitted(tft, haConnLabel(haConnState), 80, y, SCREEN_W - 80 - 12, rowFont, false);
-  // (tapping this row re-probes the HA connection - no room for a hint here)
-
-  // Narrower buttons than before (32px) to fit three - cap the label font
-  // so Large text size doesn't overflow them.
-  int sBtnFont = btnFont > 2 ? 2 : btnFont;
-
-  // Theme toggle button
-  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_THEME_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_THEME_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_STROKE);
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(COL_TEXT, COL_PANEL);
-  uiDrawString(tft, cfg.darkTheme ? "Dark Mode: ON" : "Light Mode: ON",
-                 STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_THEME_BTN_Y + STATUS_BTN_H / 2, sBtnFont);
-
-  // Flip screen toggle button
-  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_FLIP_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_FLIP_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_STROKE);
-  tft.setTextColor(COL_TEXT, COL_PANEL);
-  uiDrawString(tft, cfg.flipScreen ? "Screen: Flipped" : "Screen: Normal",
-                 STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_FLIP_BTN_Y + STATUS_BTN_H / 2, sBtnFont);
-
-  // Reboot button
-  uint16_t rbColor = rebootArmed ? fixColor565(TFT_RED) : COL_PANEL;
-  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_REBOOT_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, rbColor);
-  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_REBOOT_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_STROKE);
-  tft.setTextColor(rebootArmed ? fixColor565(TFT_WHITE) : COL_TEXT, rbColor);
-  uiDrawString(tft, rebootArmed ? "Tap Again" : "Reboot Device",
-                 STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_REBOOT_BTN_Y + STATUS_BTN_H / 2, sBtnFont);
-  tft.setTextDatum(TL_DATUM);
+  drawStatusButton(STATUS_BTN_L_X, STATUS_ROW1_BTN_Y, STATUS_BTN_HALF_W,
+                   cfg.darkTheme ? "Dark" : "Light", false);
+  drawStatusButton(STATUS_BTN_R_X, STATUS_ROW1_BTN_Y, STATUS_BTN_HALF_W,
+                   cfg.flipScreen ? "Flip: On" : "Flip: Off", false);
+  drawStatusButton(STATUS_BTN_FULL_X, STATUS_ROW2_BTN_Y, STATUS_BTN_FULL_W,
+                   rebootArmed ? "Tap again to reboot" : "Reboot", rebootArmed);
 }
 
 void drawForecastPageFull() {
@@ -2643,35 +2622,35 @@ void handleTileTap(int tileIdx) {
 }
 
 void handleStatusPageTap(int x, int y) {
-  bool inButtonX = (x >= STATUS_THEME_BTN_X && x < STATUS_THEME_BTN_X + STATUS_THEME_BTN_W);
-
-  // Tapping the HA row forces an immediate connection re-test. Shows
-  // "Checking..." right away; ensureHaCheck() does the actual probe on the
-  // next loop and redraws with the result.
-  if (y >= STATUS_HA_ROW_Y - 6 && y < STATUS_HA_ROW_Y + STATUS_ROW_H - 4) {
+  // HA row - tap anywhere on it to re-probe the connection now.
+  if (y >= STATUS_HA_ROW_Y - 8 && y < STATUS_HA_ROW_Y + STATUS_ROW_H - 4) {
     haConnState = HA_CONN_UNKNOWN;
     lastHaCheckMs = 0;
     pageDirty = true;
     return;
   }
 
-  if (inButtonX && y >= STATUS_THEME_BTN_Y && y < STATUS_THEME_BTN_Y + STATUS_BTN_H) {
-    cfg.darkTheme = !cfg.darkTheme;
-    applyTheme(cfg.darkTheme);
-    saveConfig();
-    pageDirty = true;
-    return;
+  // Row 1: Theme (left half) | Flip (right half)
+  if (y >= STATUS_ROW1_BTN_Y && y < STATUS_ROW1_BTN_Y + STATUS_BTN_H) {
+    if (x >= STATUS_BTN_L_X && x < STATUS_BTN_L_X + STATUS_BTN_HALF_W) {
+      cfg.darkTheme = !cfg.darkTheme;
+      applyTheme(cfg.darkTheme);
+      saveConfig();
+      pageDirty = true;
+      return;
+    }
+    if (x >= STATUS_BTN_R_X && x < STATUS_BTN_R_X + STATUS_BTN_HALF_W) {
+      cfg.flipScreen = !cfg.flipScreen;
+      applyScreenRotation();
+      saveConfig();
+      pageDirty = true;
+      return;
+    }
   }
 
-  if (inButtonX && y >= STATUS_FLIP_BTN_Y && y < STATUS_FLIP_BTN_Y + STATUS_BTN_H) {
-    cfg.flipScreen = !cfg.flipScreen;
-    applyScreenRotation();
-    saveConfig();
-    pageDirty = true;
-    return;
-  }
-
-  if (inButtonX && y >= STATUS_REBOOT_BTN_Y && y < STATUS_REBOOT_BTN_Y + STATUS_BTN_H) {
+  // Row 2: Reboot (full width)
+  if (x >= STATUS_BTN_FULL_X && x < STATUS_BTN_FULL_X + STATUS_BTN_FULL_W &&
+      y >= STATUS_ROW2_BTN_Y && y < STATUS_ROW2_BTN_Y + STATUS_BTN_H) {
     if (rebootArmed) {
       ESP.restart();
     } else {
