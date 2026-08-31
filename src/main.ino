@@ -2555,18 +2555,18 @@ void drawTimersPageFull() {
   getSlotRect(5, false, cx, cy, cw, ch);
   uiFillRR(tft, cx, cy, cw, ch, gCardRadius, COL_PANEL);
   if (showTileBorder) uiStrokeRR(tft, cx, cy, cw, ch, gCardRadius, COL_STROKE, COL_PANEL);
-  // "Flash Lights" on one line overruns the tile in the wider mono
-  // typeface - stack it as two comfortably-spaced words with an iOS-style
-  // toggle below instead of a cramped centred checkbox.
+  // "Flash Lights" won't fit on one line in the wider mono typeface, so
+  // it's stacked as two words with a small toggle underneath. Everything
+  // is placed with a margin off every edge - the tile is only 70 px tall.
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_DIM, COL_PANEL);
-  uiDrawFitted(tft, "Flash", cx + cw / 2, cy + 2, cw - 8, 1, false);
-  uiDrawFitted(tft, "Lights", cx + cw / 2, cy + 22, cw - 8, 1, false);
+  uiDrawFitted(tft, "Flash", cx + cw / 2, cy + 5, cw - 8, 1, false);
+  uiDrawFitted(tft, "Lights", cx + cw / 2, cy + 25, cw - 8, 1, false);
   tft.setTextDatum(TL_DATUM);
 
-  const int pw = 46, ph = 20;
+  const int pw = 34, ph = 14;
   int px = cx + cw / 2 - pw / 2;
-  int py = cy + ch - ph - 8;
+  int py = cy + ch - ph - 7;
   bool on = cfg.flashOnExpire;
   uint16_t track = on ? COL_ACCENT : COL_PANEL_ALT;
   uiFillRR(tft, px, py, pw, ph, ph / 2, track, COL_PANEL);
