@@ -68,6 +68,8 @@
 #include <time.h>
 #include "config_types.h"
 #include "secrets.h" // WIFI_SSID / WIFI_PASSWORD - gitignored, copy from secrets.h.example
+#include "NotoSansB18.h" // anti-aliased .vlw fonts for the "smooth" typeface (theme B)
+#include "NotoSansB30.h"
 
 // =========================================================
 // WIFI / HA DEFAULTS
@@ -352,9 +354,27 @@ const UiTypefaceEntry UI_TYPEFACES[] = {
   {"sans_bold", "Sans Bold"},
   {"serif",     "Serif"},
   {"mono",      "Mono"},
+  {"smooth",    "Smooth (anti-aliased)"},
   {"classic",   "Classic (old bitmap font)"},
 };
 const int UI_TYPEFACES_COUNT = sizeof(UI_TYPEFACES) / sizeof(UI_TYPEFACES[0]);
+
+// "smooth" typeface: an anti-aliased .vlw font loaded onto both the screen
+// and the tile sprite. Two sizes - 18px body, 30px for fontNum >= 4.
+bool gSmoothFont = false;
+
+void applyTypeface() {
+  bool wantSmooth = (strcmp(cfg.uiTypeface, "smooth") == 0);
+  if (wantSmooth && !gSmoothFont) {
+    tft.loadFont(NotoSansB18_vlw);
+    sprTile.loadFont(NotoSansB18_vlw);
+    gSmoothFont = true;
+  } else if (!wantSmooth && gSmoothFont) {
+    tft.unloadFont();
+    sprTile.unloadFont();
+    gSmoothFont = false;
+  }
+}
 
 const GFXfont* uiFreeFontForRole(int fontNum) {
   bool big = (fontNum >= 4);
@@ -379,6 +399,14 @@ const GFXfont* uiFreeFontForRole(int fontNum) {
 // expected while experimenting, not necessarily a new bug.
 template<typename T>
 void uiDrawString(T& d, const String& text, int x, int y, int fontNum) {
+  if (gSmoothFont) {
+    bool big = (fontNum >= 4);
+    if (big) d.loadFont(NotoSansB30_vlw);
+    d.drawString(text, x, y);
+    if (big) d.loadFont(NotoSansB18_vlw);
+    return;
+  }
+
   bool classic = (strlen(cfg.uiTypeface) == 0) || strcmp(cfg.uiTypeface, "classic") == 0;
 
   if (classic) {
@@ -397,6 +425,13 @@ void uiDrawString(T& d, const String& text, int x, int y, int fontNum) {
 // as before actually drawing with them.
 template<typename T>
 int uiTextWidth(T& d, const String& text, int fontNum) {
+  if (gSmoothFont) {
+    bool big = (fontNum >= 4);
+    if (big) d.loadFont(NotoSansB30_vlw);
+    int w = d.textWidth(text);
+    if (big) d.loadFont(NotoSansB18_vlw);
+    return w;
+  }
   bool classic = (strlen(cfg.uiTypeface) == 0) || strcmp(cfg.uiTypeface, "classic") == 0;
   if (classic) {
     return d.textWidth(text, fontNum);
@@ -479,7 +514,7 @@ void setDefaultConfig() {
   cfg.use12Hour = false;
   cfg.flipScreen = false;
   cfg.uiFontSize = 1;
-  strlcpy(cfg.uiTypeface, "sans", sizeof(cfg.uiTypeface)); // theme A: GFXFF FreeSans by default
+  strlcpy(cfg.uiTypeface, "smooth", sizeof(cfg.uiTypeface)); // theme B: anti-aliased Noto Sans by default
   cfg.uiBoldText = false;
   strlcpy(cfg.bulbColorKey, "amber", sizeof(cfg.bulbColorKey));
   strlcpy(cfg.timezone, "us_pacific", sizeof(cfg.timezone));
@@ -3518,6 +3553,7 @@ void handleSaveDevice() {
     }
     if (validTf) strlcpy(cfg.uiTypeface, tf.c_str(), sizeof(cfg.uiTypeface));
   }
+  applyTypeface(); // load/unload the smooth font to match
   cfg.uiBoldText = server.hasArg("uiBoldText");
   // Bulb color picker and web UI font picker removed from the settings
   // page for now - cfg.bulbColorKey stays at its default ("amber") and
@@ -4168,6 +4204,7 @@ void setup() {
     saveConfig();
   }
   applyScreenRotation(); // now that cfg.flipScreen is known
+  applyTypeface();       // load the smooth .vlw font if selected
   applyTheme(cfg.darkTheme);
   applyTimezone();
 
