@@ -205,13 +205,13 @@ bool showTileBorder;
 
 void applyTheme(bool dark) {
   if (dark) {
-    COL_BG        = fixColor565(0x18E3); // #1a1c1a  warm near-black
-    COL_PANEL     = fixColor565(0x41EA); // #443c52  lifted panel
-    COL_PANEL_ALT = fixColor565(0x524C); // #524a60
-    COL_STROKE    = fixColor565(0x630E); // #636070  hairline
-    COL_TEXT      = fixColor565(0xFFFE); // #fdfcf5  warm paper
-    COL_DIM       = fixColor565(0xAD33); // #a8a49f
-    COL_ACCENT    = fixColor565(0xFCE5); // #ff9c28  incandescent amber
+    COL_BG        = fixColor565(0x10A1); // #17140f  warm near-black
+    COL_PANEL     = fixColor565(0x39A5); // #3d352a  warm dark taupe
+    COL_PANEL_ALT = fixColor565(0x4A27); // #4e453a
+    COL_STROKE    = fixColor565(0x6B0A); // #6b6152  warm grey hairline
+    COL_TEXT      = fixColor565(0xF79C); // #f6f0e2  warm paper
+    COL_DIM       = fixColor565(0xAD11); // #aba28f
+    COL_ACCENT    = fixColor565(0xFCE5); // #ff9d2e  incandescent amber
   } else {
     COL_BG        = fixColor565(0xE71A); // #e7e2d6  warm paper
     COL_PANEL     = fixColor565(0xFFDE); // #fbf8f1
@@ -1947,23 +1947,26 @@ void drawSunTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool 
 
   if (mode == 2) {
     int c1 = w / 4, c2 = w - w / 4;
-    sprTile.drawFastVLine(w / 2, 8, h - 16, COL_STROKE);
+    sprTile.drawFastVLine(w / 2, 14, h - 28, COL_STROKE);
     sprTile.setTextColor(COL_DIM, COL_PANEL);
-    uiDrawString(sprTile, "Sunrise", c1, 4, 1);
-    uiDrawString(sprTile, "Sunset",  c2, 4, 1);
-    drawSunHorizonIcon(sprTile, c1, 30, true,  COL_DIM);
-    drawSunHorizonIcon(sprTile, c2, 30, false, COL_DIM);
+    uiDrawString(sprTile, "Sunrise", c1, 9, 1);
+    uiDrawString(sprTile, "Sunset",  c2, 9, 1);
+    drawSunHorizonIcon(sprTile, c1, h / 2 + 2, true,  COL_DIM);
+    drawSunHorizonIcon(sprTile, c2, h / 2 + 2, false, COL_DIM);
     sprTile.setTextColor(COL_TEXT, COL_PANEL);
-    uiDrawFitted(sprTile, riseT, c1, h - 16, w / 2 - 10, fontTile());
-    uiDrawFitted(sprTile, setT,  c2, h - 16, w / 2 - 10, fontTile());
+    uiDrawFitted(sprTile, riseT, c1, h - 24, w / 2 - 20, fontTile());
+    uiDrawFitted(sprTile, setT,  c2, h - 24, w / 2 - 20, fontTile());
   } else {
+    // Single sunrise / sunset tile - same composition as the light tiles:
+    // label top-left, big time bottom-left, small glyph top-right.
     bool rise = (mode == 0);
-    int cx = wide ? w / 4 : w / 2;
+    const int pad = 12;
+    sprTile.setTextDatum(TL_DATUM);
     sprTile.setTextColor(COL_DIM, COL_PANEL);
-    uiDrawString(sprTile, rise ? "Sunrise" : "Sunset", cx, 4, 1);
-    drawSunHorizonIcon(sprTile, cx, 32, rise, COL_DIM);
+    uiDrawFitted(sprTile, rise ? "Sunrise" : "Sunset", pad, 10, w - pad - 24, 1);
+    drawSunHorizonIcon(sprTile, w - 21, 22, rise, COL_DIM);
     sprTile.setTextColor(COL_TEXT, COL_PANEL);
-    uiDrawString(sprTile, rise ? riseT : setT, cx, h - 16, fontTile());
+    uiDrawFitted(sprTile, rise ? riseT : setT, pad, h - 27, w - pad * 2, 2);
   }
 
   sprTile.setTextDatum(TL_DATUM);
@@ -2036,7 +2039,7 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   } else if (!haConfigured()) {
     stateText = "No HA";
   } else if (!rt.known) {
-    stateText = "...";
+    stateText = (isLight || isSwitch) ? "Off" : "..."; // optimistic default; corrects on poll
   } else if (isSensor) {
     stateText = rt.lastRawState;
   } else if (isLight) {
@@ -2057,16 +2060,16 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   if (useLitBg) sprTile.drawRoundRect(0, 0, w, h, CARD_RADIUS, COL_ACCENT); // amber rim = glow
 
   const uint16_t warmColor = resolveBulbColor();
-  const int pad = 9;
+  const int pad = 12; // clears the CARD_RADIUS corner
 
   // --- Label: top-left, small, dim; leaves the top-right corner free ---
   sprTile.setTextDatum(TL_DATUM);
   sprTile.setTextColor(COL_DIM, bgColor);
-  uiDrawFitted(sprTile, tl.label, pad, 7, w - pad - 30, 1);
+  uiDrawFitted(sprTile, tl.label, pad, 10, w - pad - 24, 1);
 
-  // --- Type icon: small, top-right corner ---
-  int mIconX = w - pad - 10;
-  int mIconY = 19;
+  // --- Type icon: small, inset from the top-right corner ---
+  int mIconX = w - 22;
+  int mIconY = 22;
   bool activeState = ((isLight || isSwitch) && rt.on);
   if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on, warmColor);
   else if (isSwitch) drawMiniSwitch(sprTile, mIconX, mIconY, rt.on, COL_ACCENT);
@@ -2078,7 +2081,7 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   uint16_t valColor = activeState ? COL_ACCENT
                     : (rt.known || isSensor || strlen(tl.entityId) == 0) ? COL_TEXT : COL_DIM;
   sprTile.setTextColor(valColor, bgColor);
-  int vy = h - (vFont == 4 ? 30 : 24);
+  int vy = h - (vFont == 4 ? 36 : 27);
   uiDrawFitted(sprTile, stateText, pad, vy, w - pad * 2, vFont);
   sprTile.setTextDatum(TL_DATUM);
 
