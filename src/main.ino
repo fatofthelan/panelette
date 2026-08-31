@@ -11,7 +11,9 @@
 //     the web UI (Home stays first), or reset to the default.
 //   - Tile types: light (tap=toggle, hold+drag=brightness slider),
 //     switch (tap=toggle), sensor (read-only state), scene / script /
-//     button (tap fires a service, brief "Sent" flash), weather, timer
+//     button (tap fires a service, brief "Sent" flash), weather, timer,
+//     sunrise / sunset / sun (today's times from Open-Meteo; "sun" is a
+//     combined sunrise+sunset tile for a 1x2 wide slot)
 //   - Forecast page: 5-day weather (Open-Meteo, no API key)
 //   - Timers page: presets + custom time, optional light-flash on expiry
 //   - Status page: network + HA connection info (tap the HA row to
@@ -1009,6 +1011,8 @@ void updateTimerState() {
 float weatherCurrentTemp = NAN; // already in display units (F or C, see useFahrenheit())
 int weatherCurrentCode = -1;    // WMO weather code
 bool weatherIsDay = true;       // drives sun vs moon icon variants
+int weatherSunriseMin = -1;     // today's sunrise, minutes since local midnight (-1 = unknown)
+int weatherSunsetMin = -1;
 bool weatherKnown = false;
 time_t lastWeatherFetch = 0;
 const uint32_t WEATHER_INTERVAL_SEC = 15UL * 60UL;
@@ -1029,6 +1033,22 @@ bool useFahrenheit() {
   return tz.startsWith("us_") || tz == "alaska" || tz == "hawaii";
 }
 
+// minutes-since-midnight -> "6:12 AM" / "06:12" per cfg.use12Hour.
+String formatClockMin(int minsSinceMidnight) {
+  if (minsSinceMidnight < 0) return "--:--";
+  int hh = (minsSinceMidnight / 60) % 24;
+  int mm = minsSinceMidnight % 60;
+  char buf[12];
+  if (cfg.use12Hour) {
+    int h12 = hh % 12;
+    if (h12 == 0) h12 = 12;
+    snprintf(buf, sizeof(buf), "%d:%02d %s", h12, mm, hh >= 12 ? "PM" : "AM");
+  } else {
+    snprintf(buf, sizeof(buf), "%02d:%02d", hh, mm);
+  }
+  return String(buf);
+}
+
 bool fetchWeather() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
@@ -1039,7 +1059,7 @@ bool fetchWeather() {
   String url = "https://api.open-meteo.com/v1/forecast?latitude=" + String(cfg.weatherLat, 4) +
                "&longitude=" + String(cfg.weatherLon, 4) +
                "&current=temperature_2m,weather_code,is_day" +
-               "&daily=weather_code,temperature_2m_max,temperature_2m_min" +
+               "&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset" +
                "&temperature_unit=" + String(useFahrenheit() ? "fahrenheit" : "celsius") +
                "&forecast_days=5&timezone=auto";
 
@@ -1053,7 +1073,7 @@ bool fetchWeather() {
   String body = http.getString();
   http.end();
 
-  DynamicJsonDocument doc(3072);
+  DynamicJsonDocument doc(5120);
   if (deserializeJson(doc, body)) return false;
 
   JsonVariant curTemp = doc["current"]["temperature_2m"];
@@ -1069,6 +1089,20 @@ bool fetchWeather() {
   JsonArray codes = doc["daily"]["weather_code"].as<JsonArray>();
   JsonArray tmax = doc["daily"]["temperature_2m_max"].as<JsonArray>();
   JsonArray tmin = doc["daily"]["temperature_2m_min"].as<JsonArray>();
+
+  // Today's sunrise/sunset come back as local ISO strings ("2026-08-30T06:12")
+  // because we request timezone=auto. Keep just minutes-since-midnight so the
+  // tiles can re-render in 12/24h without a refetch.
+  {
+    JsonArray sr = doc["daily"]["sunrise"].as<JsonArray>();
+    JsonArray ss = doc["daily"]["sunset"].as<JsonArray>();
+    auto isoToMin = [](const String& s) -> int {
+      if (s.length() < 16) return -1;
+      return s.substring(11, 13).toInt() * 60 + s.substring(14, 16).toInt();
+    };
+    weatherSunriseMin = (sr.size() > 0) ? isoToMin(sr[0].as<String>()) : -1;
+    weatherSunsetMin  = (ss.size() > 0) ? isoToMin(ss[0].as<String>()) : -1;
+  }
 
   int count = min((int)days.size(), 5);
   for (int i = 0; i < count; i++) {
@@ -1108,7 +1142,11 @@ void ensureWeather() {
   if (fetchWeather()) {
     for (int p = 0; p < cfg.pageCount; p++) {
       for (int t = 0; t < cfg.pages[p].tileCount; t++) {
-        if (strcmp(cfg.pages[p].tiles[t].type, "weather") == 0) tileRuntime[p][t].cacheKey = "";
+        const char* ty = cfg.pages[p].tiles[t].type;
+        if (strcmp(ty, "weather") == 0 || strcmp(ty, "sunrise") == 0 ||
+            strcmp(ty, "sunset") == 0 || strcmp(ty, "sun") == 0) {
+          tileRuntime[p][t].cacheKey = "";
+        }
       }
     }
     if (strcmp(cfg.pages[currentPageIndex].type, "forecast") == 0) pageDirty = true;
@@ -1854,6 +1892,60 @@ void drawWeatherTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, b
   pushSpriteAndDelete(sprTile, x, y);
 }
 
+// Small sun-over-horizon glyph with a direction arrow. cy is the horizon.
+void drawSunHorizonIcon(TFT_eSprite& spr, int cx, int cy, bool rising, uint16_t lineColor) {
+  uint16_t sun = fixColor565(0xFDE0);
+  int r = 5;
+  int scy = cy - 4;
+  spr.fillCircle(cx, scy, r, sun);
+  spr.drawFastVLine(cx, scy - r - 3, 2, sun);
+  spr.drawLine(cx - 6, scy - 6, cx - 4, scy - 4, sun);
+  spr.drawLine(cx + 6, scy - 6, cx + 4, scy - 4, sun);
+  spr.drawFastHLine(cx - 13, cy + 5, 26, lineColor);
+  int ax = cx - 14, ay = scy;
+  if (rising) spr.fillTriangle(ax - 3, ay + 3, ax + 3, ay + 3, ax, ay - 3, lineColor);
+  else        spr.fillTriangle(ax - 3, ay - 3, ax + 3, ay - 3, ax, ay + 3, lineColor);
+}
+
+// mode: 0 = sunrise, 1 = sunset, 2 = both (for a 1x2 wide tile).
+void drawSunTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool force, int mode) {
+  TileRuntime& rt = tileRuntime[currentPageIndex][tileIdx];
+
+  String riseT = weatherKnown ? formatClockMin(weatherSunriseMin) : "...";
+  String setT  = weatherKnown ? formatClockMin(weatherSunsetMin)  : "...";
+
+  String combined = "SUN" + String(mode) + "|" + riseT + "|" + setT + "|" + String(COL_PANEL);
+  if (!force && combined == rt.cacheKey) return;
+  rt.cacheKey = combined;
+
+  makeSpriteCard(sprTile, w, h);
+  sprTile.setTextDatum(TC_DATUM);
+
+  if (mode == 2) {
+    int c1 = w / 4, c2 = w - w / 4;
+    sprTile.drawFastVLine(w / 2, 8, h - 16, COL_STROKE);
+    sprTile.setTextColor(COL_DIM, COL_PANEL);
+    uiDrawString(sprTile, "Sunrise", c1, 4, 1);
+    uiDrawString(sprTile, "Sunset",  c2, 4, 1);
+    drawSunHorizonIcon(sprTile, c1, 30, true,  COL_DIM);
+    drawSunHorizonIcon(sprTile, c2, 30, false, COL_DIM);
+    sprTile.setTextColor(COL_TEXT, COL_PANEL);
+    uiDrawFitted(sprTile, riseT, c1, h - 16, w / 2 - 10, fontTile());
+    uiDrawFitted(sprTile, setT,  c2, h - 16, w / 2 - 10, fontTile());
+  } else {
+    bool rise = (mode == 0);
+    int cx = wide ? w / 4 : w / 2;
+    sprTile.setTextColor(COL_DIM, COL_PANEL);
+    uiDrawString(sprTile, rise ? "Sunrise" : "Sunset", cx, 4, 1);
+    drawSunHorizonIcon(sprTile, cx, 32, rise, COL_DIM);
+    sprTile.setTextColor(COL_TEXT, COL_PANEL);
+    uiDrawString(sprTile, rise ? riseT : setT, cx, h - 16, fontTile());
+  }
+
+  sprTile.setTextDatum(TL_DATUM);
+  pushSpriteAndDelete(sprTile, x, y);
+}
+
 // Post-tap "Sent" flash for a scene/script/button tile. -1 page = none.
 int actionFlashPage = -1;
 int actionFlashTile = -1;
@@ -1880,6 +1972,9 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
     drawTimerTileSprite(tileIdx, x, y, w, h, wide, force);
     return;
   }
+  if (strcmp(tl.type, "sunrise") == 0) { drawSunTileSprite(tileIdx, x, y, w, h, wide, force, 0); return; }
+  if (strcmp(tl.type, "sunset") == 0)  { drawSunTileSprite(tileIdx, x, y, w, h, wide, force, 1); return; }
+  if (strcmp(tl.type, "sun") == 0)     { drawSunTileSprite(tileIdx, x, y, w, h, wide, force, 2); return; }
 
   bool isAction = (strcmp(tl.type, "scene") == 0 || strcmp(tl.type, "script") == 0 ||
                    strcmp(tl.type, "button") == 0);
@@ -2476,8 +2571,9 @@ void handleTileTap(int tileIdx) {
   PageConfig& pg = cfg.pages[currentPageIndex];
   TileConfig& tl = pg.tiles[tileIdx];
 
-  // Weather/Timer tiles aren't toggleable - tapping jumps to their page.
-  if (strcmp(tl.type, "weather") == 0) {
+  // Weather / sun / Timer tiles aren't toggleable - tapping jumps to their page.
+  if (strcmp(tl.type, "weather") == 0 || strcmp(tl.type, "sunrise") == 0 ||
+      strcmp(tl.type, "sunset") == 0 || strcmp(tl.type, "sun") == 0) {
     navigateToPageType("forecast");
     return;
   }
@@ -2864,7 +2960,7 @@ String entityPickerScript() {
     "var hint=document.getElementById('entHint');"
     "if(!sel||!dl)return;"
     "function fill(){var t=sel.value;dl.innerHTML='';"
-    "if(['light','switch','sensor','scene','script','button'].indexOf(t)<0){hint.textContent=(t=='weather'||t=='timer')?'No entity needed for this type.':'';return;}"
+    "if(['light','switch','sensor','scene','script','button'].indexOf(t)<0){hint.textContent=['weather','timer','sunrise','sunset','sun'].indexOf(t)>=0?'No entity needed for this type.':'';return;}"
     "hint.textContent='Loading '+t+' entities\\u2026';"
     "fetch('/ha/entities?domain='+t).then(function(r){if(!r.ok)throw 0;return r.text();}).then(function(x){"
     "var n=0;x.split('\\n').forEach(function(l){l=l.trim();if(!l)return;var p=l.split('|');"
@@ -3241,9 +3337,12 @@ void handlePageManage() {
     h += "<option value='button'>Button (tap to press)</option>";
     h += "<option value='weather'>Weather (icon + temperature)</option>";
     h += "<option value='timer'>Timer (countdown status)</option>";
+    h += "<option value='sunrise'>Sunrise time</option>";
+    h += "<option value='sunset'>Sunset time</option>";
+    h += "<option value='sun'>Sunrise + Sunset (use a wide tile)</option>";
     h += "</select>";
     h += "<label>Label</label><input name='label' placeholder='e.g. Bedside Lamp'>";
-    h += "<label>Entity ID (not used for Weather/Timer tiles)</label>";
+    h += "<label>Entity ID (not used for Weather / Timer / Sun tiles)</label>";
     h += "<input name='entityId' list='entlist' autocomplete='off' placeholder='e.g. light.tobias_bedside'>";
     h += "<datalist id='entlist'></datalist>";
     h += "<div class='muted' id='entHint'></div>";
@@ -3304,11 +3403,13 @@ void handleTileEditForm() {
   h += "<input type='hidden' name='index' value='" + String(idx) + "'>";
 
   h += "<label>Type</label><select name='type'>";
-  const char* types[8] = {"light", "switch", "sensor", "scene", "script", "button", "weather", "timer"};
-  const char* typeLabels[8] = {"Light (toggle + dim)", "Switch (toggle only)", "Sensor (read-only)",
-                               "Scene (tap to activate)", "Script (tap to run)", "Button (tap to press)",
-                               "Weather (icon + temperature)", "Timer (countdown status)"};
-  for (int i = 0; i < 8; i++) {
+  const char* types[11] = {"light", "switch", "sensor", "scene", "script", "button",
+                           "weather", "timer", "sunrise", "sunset", "sun"};
+  const char* typeLabels[11] = {"Light (toggle + dim)", "Switch (toggle only)", "Sensor (read-only)",
+                                "Scene (tap to activate)", "Script (tap to run)", "Button (tap to press)",
+                                "Weather (icon + temperature)", "Timer (countdown status)",
+                                "Sunrise time", "Sunset time", "Sunrise + Sunset (use a wide tile)"};
+  for (int i = 0; i < 11; i++) {
     h += "<option value='" + String(types[i]) + "'";
     if (strcmp(tl.type, types[i]) == 0) h += " selected";
     h += ">" + String(typeLabels[i]) + "</option>";
@@ -3316,7 +3417,7 @@ void handleTileEditForm() {
   h += "</select>";
 
   h += "<label>Label</label><input name='label' value='" + htmlEscape(tl.label) + "'>";
-  h += "<label>Entity ID (not used for Weather/Timer tiles)</label>";
+  h += "<label>Entity ID (not used for Weather / Timer / Sun tiles)</label>";
   h += "<input name='entityId' list='entlist' autocomplete='off' value='" + htmlEscape(tl.entityId) + "'>";
   h += "<datalist id='entlist'></datalist>";
   h += "<div class='muted' id='entHint'></div>";
