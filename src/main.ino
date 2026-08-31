@@ -3116,6 +3116,11 @@ String pageHeaderHtml(const String& title) {
   h += "button.primary{background:var(--accent);color:#062230;border-color:var(--accent);font-weight:600;}";
   h += "button.danger{background:#3a1620;color:#ff8a9b;border-color:#5a2230;}";
   h += "button:disabled{opacity:0.35;cursor:default;}";
+  h += "a.btnlink{display:inline-block;margin-top:4px;padding:9px 16px;background:var(--accent);color:#062230;border:1px solid var(--accent);border-radius:10px;font-size:13px;font-weight:600;}";
+  h += "a.btnlink:hover{text-decoration:none;}";
+  h += ".seg{display:flex;gap:4px;background:var(--panel2);border:1px solid var(--border);border-radius:999px;padding:4px;margin:2px 0 14px;}";
+  h += ".seg button{flex:1;margin:0;padding:8px 0;border:none;background:transparent;color:var(--dim);border-radius:999px;font-weight:600;transition:background .15s,color .15s;}";
+  h += ".seg button.seg-on{background:var(--accent);color:#0b1f28;}";
   h += ".row{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin:10px 0;}";
   h += ".row b{font-size:15px;}";
   h += ".muted{color:var(--dim);font-size:13px;}";
@@ -3461,11 +3466,20 @@ void handleRoot() {
 
   // ---- Backup & Restore --------------------------------------------
   h += "<section class='card'><h2>Backup &amp; Restore</h2>";
-  h += "<a href='/export'>Download config backup</a>";
-  h += "<form method='POST' action='/import' enctype='multipart/form-data' style='margin-top:12px;' onsubmit=\"return confirm('This replaces ALL current settings - device name, pages, tiles, everything. Continue?');\">";
-  h += "<label>Restore from a backup file</label>";
+  h += "<div class='seg' id='brSeg'>";
+  h += "<button type='button' class='seg-on' data-pane='backup'>Back up</button>";
+  h += "<button type='button' data-pane='restore'>Restore</button>";
+  h += "</div>";
+  h += "<div id='paneBackup'>";
+  h += "<div class='muted' style='margin-bottom:8px'>Save every setting &mdash; device, pages, tiles, timers, network &mdash; to a JSON file on your computer.</div>";
+  h += "<a class='btnlink' href='/export'>Download backup file</a>";
+  h += "</div>";
+  h += "<div id='paneRestore' hidden>";
+  h += "<div class='muted' style='margin-bottom:8px'>Upload a backup file to replace <b>all</b> current settings. The panel reboots when it finishes.</div>";
+  h += "<form method='POST' action='/import' enctype='multipart/form-data' onsubmit=\"return confirm('This replaces ALL current settings - device name, pages, tiles, everything. Continue?');\">";
   h += "<input type='file' name='configFile' accept='.json'>";
-  h += "<button class='primary' type='submit'>Import &amp; Reboot</button></form>";
+  h += "<button class='primary' type='submit' style='margin-top:10px'>Restore &amp; reboot</button></form>";
+  h += "</div>";
   h += "<h3>Restart</h3>";
   h += "<form method='POST' action='/reboot' onsubmit=\"return confirm('Reboot the panel now?');\">";
   h += "<button type='submit'>Reboot panel</button></form>";
@@ -3474,6 +3488,12 @@ void handleRoot() {
   h += sortableScript();
   h += "<script>(function(){var L=document.getElementById('pageList');"
        "if(L)makeSortable(L,function(o){postOrder('/page/reorder',o);});})();</script>";
+  // Backup / Restore segmented toggle: show one workflow, hide the other.
+  h += "<script>(function(){var s=document.getElementById('brSeg');if(!s)return;"
+       "s.addEventListener('click',function(e){var b=e.target.closest('button[data-pane]');if(!b)return;"
+       "s.querySelectorAll('button').forEach(function(x){x.classList.toggle('seg-on',x===b);});"
+       "document.getElementById('paneBackup').hidden=(b.dataset.pane!=='backup');"
+       "document.getElementById('paneRestore').hidden=(b.dataset.pane!=='restore');});})();</script>";
   // Warn before leaving with unsaved edits in the long settings forms.
   h += "<script>(function(){var dirty=false;"
        "document.querySelectorAll('form.dirty-guard').forEach(function(f){"
