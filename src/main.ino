@@ -814,6 +814,8 @@ bool sliderOverlayShown = false; // the big centred brightness slider is on scre
 unsigned long touchStartMs = 0;
 int touchStartX = 0, touchStartY = 0;
 int sliderPercent = 0;
+int sliderAnchorY = 0;    // touch Y when the slider engaged
+int sliderAnchorPct = 0;  // brightness at that moment - drag is relative to here
 unsigned long lastSliderSendMs = 0;
 
 // Horizontal swipe tracking (separate from the tile long-press tracker;
@@ -825,6 +827,10 @@ int swipeStartX = 0, swipeStartY = 0;
 const unsigned long LONG_PRESS_MS = 450;
 const int MOVE_TOLERANCE = 20; // resistive touch has some inherent jitter; too tight and taps/holds misfire
 const unsigned long SLIDER_SEND_INTERVAL_MS = 250;
+// While dragging the brightness slider the resistive panel's Z (pressure)
+// reading dips in and out - tolerate brief contact loss so a moving finger
+// isn't misread as "released".
+const unsigned long SLIDER_RELEASE_GRACE_MS = 140;
 const int SWIPE_THRESHOLD_X = 40;
 
 // Resistive touch contact can bounce (touched()/released() flickering a
@@ -2206,14 +2212,12 @@ void drawBrightnessOverlay(const String& label, int percent) {
   tft.setTextDatum(TL_DATUM);
 }
 
-// Absolute screen Y -> 0-100, clamped to the visible track. Shared by the
-// touch handler and the drawing so they can't drift.
-int brightnessOverlayPctFromY(int y) {
-  int top = BRO_TRK_Y + 4;
-  int bot = BRO_TRK_Y + BRO_TRK_H - 4;
-  int cy = constrain(y, top, bot);
-  int span = max(1, bot - top);
-  return constrain(100 - ((cy - top) * 100) / span, 0, 100);
+// Drag is relative to where the finger was when the slider engaged: moving
+// the full track height up or down covers the whole 0-100% range, so the
+// value starts exactly at the light's current level and never jumps.
+int brightnessOverlayPctFromDrag(int y) {
+  int range = max(1, BRO_TRK_H - 8);
+  return constrain(sliderAnchorPct + ((sliderAnchorY - y) * 100) / range, 0, 100);
 }
 
 // =========================================================
@@ -2848,6 +2852,64 @@ void handleContinuousTouch() {
   PageConfig& pg = cfg.pages[currentPageIndex];
   bool isGridPage = (strcmp(pg.type, "home") == 0 || strcmp(pg.type, "area") == 0);
 
+  // --- Active brightness slider: owns the touch stream until a *sustained*
+  // release, so resistive-contact flicker during the drag can't collapse it. ---
+  if (sliderActive) {
+    static unsigned long sliderLostMs = 0;
+    int idx = touchTileIndex;
+    bool valid = (idx >= 0 && idx < pg.tileCount);
+
+    if (down && valid) {
+      sliderLostMs = 0;
+      TileConfig& tl = pg.tiles[idx];
+      int pct = brightnessOverlayPctFromDrag(y);
+      if (pct != sliderPercent) {
+        sliderPercent = pct;
+        drawBrightnessOverlayValue(sliderPercent);
+        unsigned long now = millis();
+        if (now - lastSliderSendMs >= SLIDER_SEND_INTERVAL_MS) {
+          lastSliderSendMs = now;
+          haSendBrightness(tl.entityId, sliderPercent);
+          TileRuntime& rt = tileRuntime[currentPageIndex][idx];
+          rt.brightnessPct = sliderPercent;
+          rt.on = sliderPercent > 0;
+          rt.known = true;
+        }
+      }
+      wasDown = true;
+      return;
+    }
+
+    if (down && !valid) { down = false; } // tile vanished under us - treat as release
+
+    if (!down) {
+      if (sliderLostMs == 0) sliderLostMs = millis();
+      if (millis() - sliderLostMs < SLIDER_RELEASE_GRACE_MS) return; // brief dropout, hold
+
+      // Real release: push the final value and tear the overlay down.
+      sliderLostMs = 0;
+      if (valid) {
+        TileConfig& tl = pg.tiles[idx];
+        haSendBrightness(tl.entityId, sliderPercent);
+        TileRuntime& rt = tileRuntime[currentPageIndex][idx];
+        rt.brightnessPct = sliderPercent;
+        rt.on = sliderPercent > 0;
+        rt.known = true;
+        rt.cacheKey = "";
+      }
+      sliderActive = false;
+      sliderOverlayShown = false;
+      touchDown = false;
+      touchTileIndex = -1;
+      touchMoved = false;
+      swipeCandidate = false;
+      wasDown = false;
+      lastTouchReleaseMs = millis();
+      pageDirty = true; // full redraw wipes the overlay and restores the grid
+      return;
+    }
+  }
+
   if (down && !wasDown) {
     if (millis() - lastTouchReleaseMs < TOUCH_RELEASE_DEBOUNCE_MS) {
       // Likely contact bounce right after a previous release - ignore
@@ -2875,62 +2937,35 @@ void handleContinuousTouch() {
       swipeStartY = y;
     }
   } else if (down && wasDown && touchDown && touchTileIndex >= 0) {
+    // sliderActive is handled entirely by the dedicated block above, so
+    // here we're only ever tracking a not-yet-classified press.
     int idx = touchTileIndex;
     TileConfig& tl = pg.tiles[idx];
     bool isLight = (strcmp(tl.type, "light") == 0);
 
-    if (!sliderActive) {
-      int dx = abs(x - touchStartX);
-      int dy = abs(y - touchStartY);
-      if (dx > MOVE_TOLERANCE || dy > MOVE_TOLERANCE) touchMoved = true;
+    int dx = abs(x - touchStartX);
+    int dy = abs(y - touchStartY);
+    if (dx > MOVE_TOLERANCE || dy > MOVE_TOLERANCE) touchMoved = true;
 
-      if (isLight && !touchMoved && (millis() - touchStartMs) >= LONG_PRESS_MS) {
-        sliderActive = true;
-        TileRuntime& rt = tileRuntime[currentPageIndex][idx];
-        sliderPercent = constrain(rt.brightnessPct, 0, 100);
-        rt.cacheKey = "";
+    if (isLight && !touchMoved && (millis() - touchStartMs) >= LONG_PRESS_MS) {
+      sliderActive = true;
+      TileRuntime& rt = tileRuntime[currentPageIndex][idx];
+      sliderPercent = constrain(rt.brightnessPct, 0, 100);
+      sliderAnchorY = y;
+      sliderAnchorPct = sliderPercent;
+      rt.cacheKey = "";
 
-        drawBrightnessOverlay(tl.label, sliderPercent);
-        sliderOverlayShown = true;
-        lastSliderSendMs = 0;
-      }
-    } else {
-      int pct = brightnessOverlayPctFromY(y);
-
-      if (pct != sliderPercent) {
-        sliderPercent = pct;
-        drawBrightnessOverlayValue(sliderPercent);
-
-        unsigned long now = millis();
-        if (now - lastSliderSendMs >= SLIDER_SEND_INTERVAL_MS) {
-          lastSliderSendMs = now;
-          haSendBrightness(tl.entityId, sliderPercent);
-          TileRuntime& rt = tileRuntime[currentPageIndex][idx];
-          rt.brightnessPct = sliderPercent;
-          rt.on = sliderPercent > 0;
-          rt.known = true;
-        }
-      }
+      drawBrightnessOverlay(tl.label, sliderPercent);
+      sliderOverlayShown = true;
+      lastSliderSendMs = 0;
     }
   } else if (!down && wasDown) {
     lastTouchReleaseMs = millis();
 
     if (touchDown && touchTileIndex >= 0) {
       int idx = touchTileIndex;
-      TileConfig& tl = pg.tiles[idx];
 
-      if (sliderActive) {
-        haSendBrightness(tl.entityId, sliderPercent);
-        TileRuntime& rt = tileRuntime[currentPageIndex][idx];
-        rt.brightnessPct = sliderPercent;
-        rt.on = sliderPercent > 0;
-        rt.known = true;
-        rt.cacheKey = "";
-        sliderOverlayShown = false;
-        pageDirty = true; // full redraw wipes the overlay and restores the grid
-      } else if (!touchMoved) {
-        handleTileTap(idx);
-      }
+      if (!touchMoved) handleTileTap(idx);
 
       touchDown = false;
       touchTileIndex = -1;
