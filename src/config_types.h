@@ -72,6 +72,7 @@ struct DeviceConfig {
 struct TileRuntime {
   bool known = false;
   bool on = false;
+  bool unavailable = false; // HA reported "unavailable"/"unknown" (e.g. bulb powered off at the switch)
   int brightnessPct = 100;
   String lastRawState = "";
   time_t lastFetch = 0;

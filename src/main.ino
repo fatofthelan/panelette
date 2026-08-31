@@ -1565,6 +1565,7 @@ bool haFetchEntityState(const char* entityId, TileRuntime& rt) {
   if (!state) return false;
 
   rt.lastRawState = String(state);
+  rt.unavailable = (rt.lastRawState == "unavailable" || rt.lastRawState == "unknown");
   rt.on = (rt.lastRawState == "on");
   rt.known = true;
 
@@ -2141,6 +2142,8 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   bool isSwitch = (strcmp(tl.type, "switch") == 0);
   bool isSensor = (strcmp(tl.type, "sensor") == 0);
 
+  bool unavail = rt.known && rt.unavailable; // entity offline (e.g. bulb killed at the wall switch)
+
   String stateText;
   if (strlen(tl.entityId) == 0) {
     stateText = "Unset";
@@ -2148,6 +2151,8 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
     stateText = "No HA";
   } else if (!rt.known) {
     stateText = (isLight || isSwitch) ? "Off" : "..."; // optimistic default; corrects on poll
+  } else if (unavail) {
+    stateText = "N/A";
   } else if (isSensor) {
     stateText = rt.lastRawState;
   } else if (isLight) {
@@ -2157,25 +2162,26 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   }
 
   String combined = String(tl.label) + "|" + stateText + "|" + String(rt.on ? 1 : 0) + "|" +
-                     String(COL_PANEL) + "|" + String(COL_ACCENT);
+                     String(unavail ? 1 : 0) + "|" + String(COL_PANEL) + "|" + String(COL_ACCENT);
   if (!force && combined == rt.cacheKey) return;
   rt.cacheKey = combined;
 
   // Lit-up background for a light that's on.
-  bool useLitBg = isLight && rt.on;
+  bool useLitBg = isLight && rt.on && !unavail;
   uint16_t bgColor = useLitBg ? COL_PANEL_LIT : COL_PANEL;
   makeSpriteCard(sprTile, w, h, useLitBg ? (int)COL_PANEL_LIT : -1);
   if (useLitBg) uiStrokeRR(sprTile, 0, 0, w, h, gCardRadius, COL_ACCENT, bgColor); // accent rim when on
 
   const int pad = 12;
-  bool activeState = ((isLight || isSwitch) && rt.on);
+  bool activeState = ((isLight || isSwitch) && rt.on && !unavail);
 
   drawTileLabel(sprTile, tl.label, pad, w, w - pad - 6, bgColor);
 
   // --- Value: bottom-left, the tile's focal point ---
   bool shortVal = (stateText.length() <= 4);
   int vFont = shortVal ? (cfg.uiFontSize == 0 ? 2 : 4) : 2;
-  uint16_t valColor = activeState ? COL_ACCENT
+  uint16_t valColor = unavail ? COL_DIM
+                    : activeState ? COL_ACCENT
                     : (rt.known || isSensor || strlen(tl.entityId) == 0) ? COL_TEXT : COL_DIM;
   sprTile.setTextColor(valColor, bgColor);
   int vy = h - (vFont == 4 ? 36 : 27);
@@ -2185,9 +2191,15 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   // --- Type icon: bottom-right, out of the label's way ---
   int mIconX = w - 19;
   int mIconY = h - 19;
-  if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on, COL_ACCENT, bgColor);
-  else if (isSwitch) drawMiniSwitch(sprTile, mIconX, mIconY, rt.on, COL_ACCENT, bgColor);
+  if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on && !unavail, COL_ACCENT, bgColor);
+  else if (isSwitch) drawMiniSwitch(sprTile, mIconX, mIconY, rt.on && !unavail, COL_ACCENT, bgColor);
   else               drawMiniSensor(sprTile, mIconX, mIconY, COL_DIM, bgColor);
+
+  // Diagonal strike-through when the entity is unavailable - reads as
+  // "crossed out / not reachable" regardless of tile type.
+  if (unavail) {
+    sprTile.drawWideLine(mIconX - 10, mIconY - 10, mIconX + 10, mIconY + 10, 2.0f, COL_TEXT, bgColor);
+  }
 
   pushSpriteAndDelete(sprTile, x, y);
 }
