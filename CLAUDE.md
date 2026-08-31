@@ -14,13 +14,17 @@ build-config changes.
 
 ## Files
 
-- `src/main.ino` - the whole firmware, single file (~3000 lines). It is a
+- `src/main.ino` - the whole firmware, single file (~4500 lines). It is a
   `.ino`, not a `.cpp`, on purpose - see "auto-prototype gotcha" below.
-- `src/config_types.h` - struct definitions only: `TileConfig`, `PageConfig`,
-  `DeviceConfig`, `TileRuntime`, `TzEntry`, `WebFontEntry`. These MUST live
-  in a header, not the .ino - see the auto-prototype gotcha. Note: the
-  `DeviceConfig cfg` global instance and `struct BulbColorEntry` are in
-  `main.ino`, not here.
+- `src/config_types.h` - struct definitions + `enum HaConnState` only:
+  `TileConfig`, `PageConfig`, `DeviceConfig`, `TileRuntime`, `TzEntry`,
+  `WebFontEntry`. These MUST live in a header, not the .ino - see the
+  auto-prototype gotcha. Note: the `DeviceConfig cfg` global instance and
+  `struct BulbColorEntry` are in `main.ino`, not here.
+- `src/NotoSansB18.h` / `NotoSansB30.h` / `PlexMono16.h` / `PlexMono26.h` -
+  the anti-aliased `.vlw` fonts as `PROGMEM` byte arrays. See "Fonts".
+- `tools/ttf2vlw.py` - the TTF -> `.vlw` converter that generated those
+  (freetype-py, no Processing IDE needed). See "Fonts".
 - `include/secrets.h` - `WIFI_SSID` / `WIFI_PASSWORD` `#define`s. Gitignored.
   Copy `include/secrets.h.example` to it and fill in real values.
 - `platformio.ini` - single env `[env:esp32dev]`. Read its comments before
@@ -40,8 +44,12 @@ build-config changes.
   (`https://github.com/PaulStoffregen/XPT2046_Touchscreen.git`), not the
   PlatformIO registry. The registry build is old and its `begin()` takes no
   arguments; the sketch calls `ts.begin(touchSPI)` with an explicit SPIClass.
+- **`links2004/WebSockets @ ^2.4.1`** - the HA WebSocket live-updates client
+  (optional feature, off by default). ~27 KB flash.
+- **`-D SMOOTH_FONT=1`** in `build_flags` - enables TFT_eSPI `.vlw`
+  smooth-font support, which the whole on-device UI now uses.
 - Partition table is `min_spiffs.csv` (`board_build.partitions`) - ~1.9 MB
-  app + ~190 KB LittleFS; app is at ~63%. Arduino IDE equivalent: Tools ->
+  app + ~190 KB LittleFS; app is at ~68%. Arduino IDE equivalent: Tools ->
   Partition Scheme -> "Minimal SPIFFS". Changing it reformats LittleFS, so
   the on-device config is lost - export/import around any partition change.
 - The `TOUCH_CS pin not defined` warning from TFT_eSPI at build time is
@@ -138,42 +146,109 @@ Known cosmetic issue: VS Code's C/C++ IntelliSense does not parse `.ino`
 files, so it shows spurious squiggles. The build is unaffected. Dismissed
 deliberately rather than converting to `.cpp`.
 
-## Font / typeface constraints
+## Fonts (anti-aliased `.vlw`, since the theme redesign)
 
-- The "Classic" typeface (default) is TFT_eSPI's built-in numbered bitmap
-  fonts (1/2/4). Every tile/page layout was pixel-tuned against Classic's
-  glyph metrics.
-- A "Free Fonts" system (Sans / Serif / Mono / Sans Bold, via TFT_eSPI's
-  GFXFF fonts) is selectable in the web UI as an experiment. Different
-  (usually wider) metrics, can overflow tiles that fit in Classic.
-  `uiDrawFitted()` shrinks-then-truncates text that does not fit, but Free
-  Fonts only have two size tiers (9pt/12pt) with no smaller tile-scale
-  option, so long labels there truncate with "..." rather than shrink.
-- True anti-aliased fonts (TFT_eSPI `.vlw` smooth-font) were considered and
-  explicitly NOT pursued - generating a valid `.vlw` needs the Processing
-  IDE, and a malformed font file can crash the device on boot with no
-  graceful failure. LVGL was discussed as an alternative framework with an
-  easier font converter, but adopting it means rebuilding the whole UI - not
-  done, just noted as a future option.
+The on-device UI is drawn entirely in **anti-aliased TFT_eSPI `.vlw`
+smooth-fonts** - the old numbered bitmap fonts (1/2/4) and the GFXFF
+"Free Fonts" experiment are both gone.
+
+- Two families, one per typeface axis: **Noto Sans Bold** (`uiTypeface` =
+  "sans") and **IBM Plex Mono Medium** ("mono"). Each ships as two size
+  cuts: a base (~16-18 px, `NotoSansB18` / `PlexMono16`) and a big cut
+  (~26-30 px, `NotoSansB30` / `PlexMono26`), embedded as `PROGMEM` byte
+  arrays in `src/*.h`.
+- **Only one `.vlw` can be loaded at a time.** `applyTypeface()` loads the
+  active base cut into both `tft` and `sprTile`; `uiDrawString()` /
+  `uiTextWidth()` / `uiDrawFitted()` swap in the big cut (`gFontBig`) for
+  the duration of a call when `fontNum >= 4`, then reload the base.
+  **Never call `tft.drawString()` / `.setTextFont()` / numbered fonts
+  directly** - always go through the `ui*` wrappers.
+- `gFontBase` / `gFontBig` point at the active cuts; `gMono` / `gForceUpper`
+  (mono uppercases every string) / `gTileRule` (hairline under mono tile
+  labels) are set by `applyTypeface()`.
+- **`.vlw` generation**: `tools/ttf2vlw.py` (freetype-py, installed into
+  `~/.platformio/penv/`). Processing IDE is NOT needed. It writes the v11
+  `.vlw` format and computes ascent/descent from the actual rendered ASCII
+  glyph extents (not `face.size.ascender`, which came out too tall). To add
+  a glyph range or regenerate: edit the `codes` list, run
+  `ttf2vlw.py font.ttf out.vlw <px> [wght]`, then hexdump into a
+  `const uint8_t NAME_vlw[] PROGMEM` array. Current range is printable ASCII
+  0x20-0x7E plus 0xB0 (degree). A malformed `.vlw` can crash on boot - keep
+  a known-good copy.
+- Layout is tuned against these metrics. `uiDrawFitted()` truncates with
+  "..." when text overflows (there is no smaller tile-scale cut to shrink
+  to). Real widths are in `ttf2vlw.py`'s output and can be decoded from the
+  headers if you need to check a fit.
 - GFXFF font headers (`Fonts/GFXFF/*.h`) must NOT be explicitly `#include`d
-  in the .ino - `TFT_eSPI.h` already includes all of them internally when
-  `LOAD_GFXFF` is set. Explicit includes caused "redefinition" errors (those
-  headers have no include guards).
+  even though nothing uses them now - `TFT_eSPI.h` includes them all when
+  `LOAD_GFXFF` is set (still in `build_flags`), and re-including caused
+  "redefinition" errors (no include guards).
+
+## Theme system (three orthogonal axes + dark/light)
+
+Set in the web UI's Device card, applied by `applyTheme()` /
+`applyTypeface()` / `applyCornerStyle()`:
+
+- **`cfg.colorScheme`**: `cool` / `warm` / `phosphor` (default) / `neutral` -
+  a row of the `COLOR_SCHEMES[]` table, each with a full dark + light
+  `Palette`. `applyTheme(dark)` copies the chosen palette into the `COL_*`
+  globals, **each value wrapped in `fixColor565()`** (see the colour
+  inversion section).
+- **`cfg.uiTypeface`**: `sans` / `mono` (default) - see Fonts.
+- **`cfg.cornerStyle`**: `rounded` / `square` (default) - sets `gCardRadius`
+  (14 vs 3).
+- **Dark/light** is separate (`cfg.darkTheme`), toggled only on the Status
+  page. `showTileBorder` is derived: hidden only for rounded+light.
+- Defaults (`setDefaultConfig()`): dark + phosphor + mono + square.
+
+## Anti-aliased primitives ("smooth all the things")
+
+Every rounded rect / circle on the device goes through the `ui*` wrappers
+in main.ino (`uiFillRR`, `uiStrokeRR`, `uiFillCircle`, `uiRingCircle`),
+which call TFT_eSPI's `fillSmoothRoundRect` / `drawSmoothRoundRect` /
+`fillSmoothCircle`. Icon rays/hands use `drawWideLine`. **Do not use
+`fillRoundRect` / `drawRoundRect` / `fillCircle` / `drawCircle` directly** -
+they render jagged.
+
+- The AA edge blends toward a `bg` colour: pass the surface the shape sits
+  on (`COL_BG` for straight-to-screen, the local panel/sprite fill
+  otherwise). `uiFillCircle` / `fillSmoothCircle` default to `UI_AA_READ`
+  (0x00FFFFFF) = sample the actual pixel underneath - correct for sprites,
+  slower on `tft` (per-edge-pixel `readPixel` over SPI).
+- `drawSmoothRoundRect` / `drawSmoothCircle` do NOT sample bg (there's a
+  `// TODO` in TFT_eSPI) - always pass an explicit bg colour to those.
+- The brightness overlay's moving track fill is a deliberate exception:
+  plain `fillRect`, no AA, because a partial-clear of an AA fill left
+  fringe as the level swept.
 
 ## Touch handling notes
 
 - Resistive touch (XPT2046) has real contact bounce at press/release
-  transitions. `TOUCH_RELEASE_DEBOUNCE_MS` and the Timers-page-specific
-  `PRESET_GRID_GRACE_MS` both exist to stop a bounce (or a fast human
-  re-tap) from registering as a new press on whatever UI element appears
-  after the previous tap's action - especially on the Timers page, where
-  Cancel overlaps where the preset buttons reappear.
+  transitions, and the Z (pressure) reading dips mid-drag. Several guards
+  exist because of this:
+  - `TOUCH_RELEASE_DEBOUNCE_MS` / the Timers-page `PRESET_GRID_GRACE_MS` -
+    stop a bounce (or fast re-tap) from registering as a fresh press on
+    whatever UI element just appeared (esp. Timers, where Cancel overlaps
+    where the presets reappear).
+  - **Tap HA commands are deferred**: `handleTileTap()` queues the command
+    (`queueHaOnOff` / `queueHaActivate` / `queueHaBrightness`), and
+    `flushPendingHaCommand()` runs it from `loop()` *after* the touch pass.
+    The synchronous ~100-400 ms HTTP POST used to land right in the
+    debounce window and let the release-bounce double-toggle the tile.
+  - **Brightness slider** (`sliderActive` block in `handleContinuousTouch`):
+    long-press throws up a large centred overlay (`drawBrightnessOverlay`),
+    drag is *relative* to the engage point (anchor Y + anchor %), and it
+    only releases after `SLIDER_RELEASE_GRACE_MS` of *sustained* contact
+    loss (brief dips are ignored). A long-press released without dragging
+    >14 px falls through to a normal tap/toggle - the slider never steals a
+    tap. Nothing on the slider path blocks (no network, poll/weather/HA-
+    check all bail while `sliderOverlayShown`); brightness goes to HA once,
+    on release.
 - `HIT_PAD` in `hitTestTile()` intentionally extends tile touch targets a
   few px into the inter-tile gaps, since a near-miss there used to get
   misread as a swipe.
-- Long-press-to-slider (light brightness) vs. tap-to-toggle vs. swipe-to-
-  change-page are disambiguated by `MOVE_TOLERANCE` (drift allowed before a
-  touch stops counting as a tap) and `LONG_PRESS_MS`.
+- Tap vs. long-press vs. swipe are disambiguated by `MOVE_TOLERANCE`
+  and `LONG_PRESS_MS`.
 
 ## Config system
 
@@ -203,9 +278,25 @@ deliberately rather than converting to `.cpp`.
 - Some config fields exist with no live UI control (deliberately disabled,
   not forgotten): `bulbColorKey` is forced to "amber" in `resolveBulbColor()`
   regardless of what is stored (the web UI picker was removed after a stale-
-  value bug); `webFontChoice` is unused - `pageHeaderHtml()` hardcodes
-  Poppins. The tables (`BULB_COLORS`, `WEB_FONTS`) remain in case either
+  value bug); `webFontChoice` / `uiFontSize` / `uiBoldText` are effectively
+  unused now. The tables (`BULB_COLORS`, `WEB_FONTS`) remain in case either
   control comes back.
+- Newer fields: `uiTypeface` / `colorScheme` / `cornerStyle` (theme axes),
+  `flashOnExpire` (Timers "flash lights" toggle - persisted, defaults on,
+  written through on every on-device tap), `marqueeEnabled` (expiry
+  screen-border alert, defaults on), `haLiveUpdates` (WebSocket, defaults
+  off). `TileConfig.dateEuro` (per-tile D/M/Y vs M/D/Y for date tiles).
+  `TileRuntime.unavailable` (not persisted) - set from the HA `state`
+  string; the tile shows "N/A" + a struck-through icon.
+- **The Device / Home Assistant / Weather cards are three separate `<form>`s**
+  that all POST `/save-device`. `handleSaveDevice()` gates each card's
+  writes behind a field unique to that form (`deviceName` / `haUrl` /
+  `weatherName`) so a partial submit can't clear the others. Same trick in
+  `handleSaveFlash()` (gated on `flashRate`).
+- Web UI checkboxes render as coloured on/off **toggle switches** (CSS
+  `appearance:none` on `.check input[type=checkbox]`); radios are unchanged.
+  Backup & Restore is a **segmented Back up / Restore control** (`.seg`,
+  JS-toggled panes).
 - **Page order**: `cfg.customPageOrder` (bool). When false (default),
   `sortPages()` runs on load / after adding a page and enforces the
   canonical order: Home first, then area pages, then Forecast, Timers,
@@ -227,12 +318,37 @@ deliberately rather than converting to `.cpp`.
 
 ## Home Assistant integration
 
-- **REST only, plain `http://`.** No WebSocket, no TLS. WebSocket live
-  updates were considered and deferred (single-core, no-PSRAM MCU; event
-  volume + reconnect complexity). `wss://` / self-signed certs are not
-  supported - a valid public cert would work.
-- Tiles poll `GET /api/states/<id>` every `POLL_INTERVAL_MS` (30 s) while
-  their page is showing. Only light/switch/sensor tiles poll.
+- **Plain `http://` only, no TLS.** `wss://` / self-signed certs are not
+  supported - a valid public cert would work. `haWsUrlSupported()` requires
+  the URL start with `http://`.
+- **REST is the baseline.** Tiles poll `GET /api/states/<id>` every
+  `POLL_INTERVAL_MS` (30 s) while their page is showing (`pollCurrentPageTiles`).
+  Only light/switch/sensor tiles poll.
+- **Optional WebSocket live updates** (`cfg.haLiveUpdates`, off by default) -
+  the `haWs*` module. Holds a `WebSocketsClient` to `/api/websocket`,
+  authenticates with the stored token, and `subscribe_entities` (HA
+  2022.4+) on the union of every light/switch/sensor entity across all
+  pages. HA sends full initial state on subscribe, then compact `a`/`c`
+  (added/changed) diffs; `haWsApplyEntitySlice()` pulls `s` (state) and
+  `a.brightness` and clears the matching tiles' `cacheKey`. State goes
+  through the same code as REST (`applyEntityStateJson` for REST,
+  `haWsApplyEntitySlice` for WS). While the socket is `HAWS_READY` the REST
+  poll drops to a 150 s backstop and page-open polls are skipped.
+  - **One JSON parse per frame.** ArduinoJson parses a non-const
+    `uint8_t*` zero-copy (rewrites the buffer in place), so an earlier
+    two-pass "peek at type then full parse" corrupted every frame. Parse
+    once, size the doc to the frame length.
+  - Re-subscribes (full reconnect) when the tracked entity set changes -
+    detected by an FNV signature checked every 2 s.
+  - Falls back to polling on any failure (`HAWS_FAILED`: https URL / bad
+    token; retried every 30 s). `haWsLoop()` is level-triggered, not
+    edge-triggered - a settings save calls `haWsStop()` and the loop picks
+    it back up. `haWsRawLog` (default false) dumps raw frames to Serial.
+  - **"unavailable" latency is HA's, not ours.** After a device loses
+    power, how fast HA marks it `unavailable` is that integration's
+    availability timeout (ZHA mains devices default to 2 h). The panel
+    reflects whatever HA reports - it shows the last known state until HA
+    catches up.
 - Commands: `haSendCommand()` (`<domain>/turn_on|off`), `haSendBrightness()`
   (`light/turn_on` + `brightness_pct`), `haActivate()` for scene/script/
   button tiles (`scene/turn_on`, `script/turn_on`, `button/press`).
@@ -263,26 +379,29 @@ deliberately rather than converting to `.cpp`.
 - scene/script/button tiles are stateless: tap fires the service and shows
   a ~550 ms "Sent" flash (`actionFlash*` globals, cleared in
   `updateCurrentPageDynamic()`); they never poll.
-- Dark theme keeps a barely-visible hairline tile border; light theme has no
-  border, relying on flat white-vs-gray fill contrast. Deliberate after
-  mockups.
+- `showTileBorder` (hairline tile/card border) is hidden only for
+  rounded+light; every other combination shows it. Deliberate after mockups.
 - Timer light-flash restores each light to its *original* on/off state and
   brightness after flashing (captured via `haFetchEntityState()` before the
   sequence starts), not just "off".
+- **The expiry screen-border marquee only flashes once a timer has EXPIRED**
+  (nothing while it counts down), until Stop/Restart, and only if
+  `cfg.marqueeEnabled`. Earlier it was a solid border for the whole
+  countdown.
 
 ## What's genuinely unresolved / open
 
-- LVGL / smooth-font migration: discussed, not started.
-- The bulb-color picker and web-font picker are disabled pending a redesign
-  without the stale-value problem the old ones had.
-- `src/main.ino` could be converted to `.cpp` (add an explicit prototype
-  block) to get proper VS Code IntelliSense - not done; build is fine as-is.
-- WebSocket live state updates: deferred, not ruled out (see the HA
-  integration section for why).
 - **No-build-tools install path** (top roadmap item): captive-portal WiFi
   onboarding (removes `secrets.h`), GitHub Releases with a merged
   `firmware.bin`, and an ESP Web Tools page for one-click browser flashing.
   Neither IDE is genuinely "easy" for a non-technical user; this is the
   answer for them. PlatformIO stays the build-from-source path.
+- WebSocket live updates: working and shipped, but off by default and still
+  proven only on one HA setup. The "unavailable" latency (HA-side, above)
+  is the main rough edge; watch free heap over long runs.
+- The bulb-color picker and web-font picker are disabled pending a redesign
+  without the stale-value problem the old ones had.
+- `src/main.ino` could be converted to `.cpp` (add an explicit prototype
+  block) to get proper VS Code IntelliSense - not done; build is fine as-is.
 - Partition is `min_spiffs.csv` (~1.9 MB app / 190 KB FS) - app is at
-  ~63%. Changing partitions reformats LittleFS: export config first.
+  ~68%. Changing partitions reformats LittleFS: export config first.

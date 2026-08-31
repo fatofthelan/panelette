@@ -175,12 +175,19 @@ On the panel's web page, in the **Home Assistant** section:
 3. Set the **Area / room name** shown on the Home screen. (Time zone and
    location are pulled from Home Assistant automatically on save - adjust
    them here afterward if needed.)
-4. Click **Save**. A banner reports whether the panel reached Home
-   Assistant. You can re-check any time with the **Test** button, or by
-   tapping the **HA** row on the panel's Status page.
+4. Click **Save Home Assistant**. A banner reports whether the panel
+   reached Home Assistant. You can re-check any time with the **Test**
+   button, or by tapping the **HA** row on the panel's Status page.
 
 > Use a plain `http://` address on your local network. `https://` with a
 > self-signed certificate will not work; a valid public certificate does.
+
+**Live updates (optional).** In the same section there's a **Live updates**
+switch. Left off, tiles refresh by polling Home Assistant every ~30 seconds.
+Turned on, the panel holds a WebSocket to Home Assistant and tiles change
+almost instantly. It needs a plain `http://` URL and falls back to polling
+if anything goes wrong; the status line under the switch shows what it's
+doing.
 
 ---
 
@@ -192,12 +199,19 @@ On the panel's web page:
    **Add area page** for a new room.
 2. **Add tile:**
    - **Type:**
-     - *Light* - tap toggles, press-and-drag sets brightness
+     - *Light* - tap toggles; press and hold for a large brightness slider
      - *Switch* - tap toggles
      - *Sensor* - read-only value
      - *Scene / Script / Button* - tap runs it once
      - *Weather* - current icon + temperature (no entity needed)
      - *Timer* - jumps to the Timers page (no entity needed)
+     - *Sunrise / Sunset / Sunrise + Sunset* - today's times for your
+       location (no entity needed; use a wide tile for the combined one)
+     - *Date / Date + weekday* - the current date; the wide "+ weekday"
+       version shows the day name large with the date beneath. A per-tile
+       switch picks `M/D/YYYY` (default) or `D/M/YYYY`.
+   A light/switch/sensor tile shows **N/A** with a line through its icon
+   when Home Assistant reports that entity as unavailable.
    - **Label** - what shows on the tile
    - **Entity ID** - start typing and pick from the list (the panel loads
      your entities of that type from Home Assistant), or paste an ID. If the
@@ -225,14 +239,20 @@ Changes take effect on the panel immediately.
 - **Swipe left/right** - change pages, or tap an icon in the bottom bar. The
   highlighted icon is the page you're on.
 - **Tap a light/switch tile** - toggle it.
-- **Press and hold a light tile, then drag** - brightness slider.
+- **Press and hold a light tile** - a large brightness slider fills the
+  screen; drag up/down, lift off to set it.
 - **Forecast page** - 5-day weather from Open-Meteo (no account needed;
   location follows your time zone, or set it manually in the web UI).
 - **Timers page** - tap a preset (editable in the web UI) or set a custom
-  time; optionally tick "flash lights" so configured lights pulse when it
-  finishes.
-- **Status page** - connection info, a **Dark/Light** theme toggle, and
-  **Reboot** (tap twice to confirm).
+  time. The **Flash Lights** toggle (on by default, and remembered) pulses
+  your configured lights when a timer finishes; a red screen border also
+  flashes until you dismiss it (both are configurable in the web UI's
+  Timers section).
+- **Status page** - connection info, a **Dark/Light** toggle, a
+  **Flip screen 180°** toggle, and **Reboot** (tap twice to confirm).
+- **Theme** - in the web UI's Device section, pick a colour scheme, a
+  typeface (Sans or Mono), and rounded or square corners. Dark/Light stays
+  on the Status page.
 
 ---
 
@@ -246,8 +266,10 @@ Your pages, tiles and HA token are stored on the panel's flash filesystem and
 **survive a firmware update** - they are not part of the code.
 
 ### Backup / move your setup
-On the web page, use **Export** to download a `hapanel-<name>-<date>.json`
-file, and **Import** to restore it (or copy a configuration to another panel).
+On the web page's **Backup & Restore** section, use **Back up** to download
+a `hapanel-<name>-<date>.json` file. Flip it to **Restore** to upload that
+file back (on this panel, or another one you want to clone the setup to) -
+the panel reboots afterward.
 
 ---
 

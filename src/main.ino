@@ -9,19 +9,26 @@
 //     icon (bulb / cloud / clock / gear). Default page order is Home,
 //     area pages, Forecast, Timers, Status - fully drag-reorderable in
 //     the web UI (Home stays first), or reset to the default.
-//   - Tile types: light (tap=toggle, hold+drag=brightness slider),
+//   - Tile types: light (tap=toggle, hold=large brightness slider),
 //     switch (tap=toggle), sensor (read-only state), scene / script /
 //     button (tap fires a service, brief "Sent" flash), weather, timer,
-//     sunrise / sunset / sun (today's times from Open-Meteo; "sun" is a
-//     combined sunrise+sunset tile for a 1x2 wide slot)
+//     sunrise / sunset / sun (Open-Meteo; "sun" is a combined 1x2 tile),
+//     date / datewide (local clock; datewide = weekday + date, 1x2)
+//   - Light/switch/sensor tiles: state, brightness %, and "N/A" with a
+//     struck-through icon when HA reports the entity unavailable
 //   - Forecast page: 5-day weather (Open-Meteo, no API key)
-//   - Timers page: presets + custom time, optional light-flash on expiry
+//   - Timers page: presets + custom time, persistent "flash lights on
+//     expiry" toggle, optional flashing screen-border alert on expiry
 //   - Status page: network + HA connection info (tap the HA row to
 //     re-test), dark/light theme toggle, 180 screen-flip toggle, reboot
-//   - Web UI (grouped into cards: Device / Home Assistant / Weather /
-//     Pages / Timers / Backup): device settings, HA URL/token, per-page
-//     hide toggle, add/remove pages and tiles, drag-to-reorder tiles and
-//     pages, import/export config.json
+//   - Theme: colour scheme (cool/warm/phosphor/neutral) x typeface
+//     (anti-aliased Noto Sans / IBM Plex Mono) x corners (rounded/square),
+//     all web-UI pickers; dark/light toggled on the Status page. Every
+//     primitive (cards, icons, slider) is anti-aliased.
+//   - Web UI (cards: Device / Home Assistant / Weather / Network / Pages /
+//     Timers / Backup): device + theme settings, HA URL/token, per-page
+//     hide toggle, add/remove pages and tiles, drag-to-reorder,
+//     toggle-style checkboxes, segmented Back up / Restore
 //   - Network card: DHCP or static IP (IP/subnet/gateway + optional DNS),
 //     validated, reboots to apply, DHCP fallback if a static IP won't
 //     associate. Web UI also has a Reboot button and an unsaved-edits guard.
@@ -32,6 +39,9 @@
 //         Status page
 //       * entity picker (datalist) in the tile forms, via /api/template
 //       * "Add from a Home Assistant area" - group-aware checklist
+//   - Optional HA WebSocket live updates (cfg.haLiveUpdates, off by
+//     default): ws:// only, subscribe_entities on the tracked entity set,
+//     REST poll stays as a slow backstop. See the haWs* module.
 //
 // Deferred:
 //   - No-build-tools install path (so a non-technical HA user needs no
@@ -42,10 +52,6 @@
 //         app), built on the min_spiffs partition
 //       * an ESP Web Tools page (GitHub Pages) - flash from Chrome/Edge
 //         with one click, no install
-//   - WebSocket live state updates: prototype in progress on the
-//     feature/live-updates branch (cfg.haLiveUpdates + the haWs* module).
-//     ws:// only, subscribe_trigger on the tracked entity set, REST poll
-//     stays as the fallback.
 // =========================================================
 
 #include <WiFi.h>
@@ -58,16 +64,12 @@
 #include <ArduinoJson.h>
 #include <SPI.h>
 #include <XPT2046_Touchscreen.h>
-#include <WebSocketsClient.h> // experimental HA live-updates (feature/live-updates)
+#include <WebSocketsClient.h> // optional HA WebSocket live updates - see haWs* module
 #include <TFT_eSPI.h>
-// "Free Fonts" (Adafruit-GFX-style outline fonts bundled with TFT_eSPI):
-// TFT_eSPI.h -> gfxfont.h already #includes every one of these font files
-// itself when LOAD_GFXFF is enabled in User_Setup.h (which this project's
-// is). Explicitly re-including them here (as an earlier version of this
-// file did) caused duplicate-definition compile errors, since these font
-// headers have no include guards. The font objects (FreeSans9pt7b, etc.)
-// are already in scope from the TFT_eSPI.h include above - nothing
-// further needed here.
+// Do NOT #include any Fonts/GFXFF/*.h here. The UI uses anti-aliased .vlw
+// fonts now (see the *.h includes below), but LOAD_GFXFF is still set in
+// build_flags, so TFT_eSPI.h already pulls in every GFXFF header - and
+// they have no include guards, so re-including caused redefinition errors.
 #include <time.h>
 #include "config_types.h"
 #include "secrets.h" // WIFI_SSID / WIFI_PASSWORD - gitignored, copy from secrets.h.example
@@ -452,13 +454,11 @@ int uiTextWidth(T& d, const String& text, int fontNum) {
   return w;
 }
 
-// Shortens text (dropping characters from the end, adding "...") until it
-// fits within maxWidth. Tries a smaller Classic font size first when
-// that's available, since showing the full word smaller beats showing a
-// truncated fragment at the original size - Free Fonts don't have a
-// smaller tile-scale tier to fall back to, so those go straight to
-// truncation. Draws the result directly rather than returning text for
-// a separate draw call, since the font actually used can change here.
+// Shortens text (dropping characters from the end, adding "..." unless
+// ellipsis=false) until it fits within maxWidth, then draws it. The .vlw
+// fonts only have the base + big cuts, no small tile-scale tier, so this
+// truncates rather than shrinking. Draws directly (not return-then-draw)
+// since which cut is loaded matters.
 template<typename T>
 void uiDrawFitted(T& d, const String& text, int x, int y, int maxWidth, int preferredFont, bool ellipsis = true) {
   int useFont = preferredFont;
@@ -1802,16 +1802,20 @@ String prettyFromEntityId(const String& eid) {
 }
 
 // =========================================================
-// HA WEBSOCKET LIVE UPDATES  (experimental - feature/live-updates)
+// HA WEBSOCKET LIVE UPDATES  (optional - cfg.haLiveUpdates, off by default)
 // =========================================================
-// When cfg.haLiveUpdates is on and the HA URL is plain http:// (so ws://),
-// hold a WebSocket to HA and push state changes straight into the tiles
-// instead of polling every 30 s. Anything that goes wrong (no connect,
-// bad token, https URL) just falls back to the existing REST polling.
+// When enabled and the HA URL is plain http:// (so ws://), hold a
+// WebSocket to HA and push state changes straight into the tiles instead
+// of polling. Anything that goes wrong (no connect, bad token, https URL)
+// falls back to REST polling, which also stays on as a slow backstop.
 //
-// Uses subscribe_trigger with an explicit entity list (the union of every
-// light/switch/sensor tile across all pages) so the socket only carries
-// events we actually care about - not every state_changed in HA.
+// subscribe_entities (HA 2022.4+) with an explicit entity list (the union
+// of every light/switch/sensor tile across all pages): the socket carries
+// only our entities, HA sends the full initial state on subscribe, and
+// every later change - including transitions to "unavailable" - arrives as
+// a compact a/c (added/changed) diff. How fast "unavailable" shows up
+// after a device loses power is entirely down to HA's own availability
+// timeout for that integration, not this code.
 WebSocketsClient haWs;
 enum HaWsPhase { HAWS_OFF, HAWS_CONNECTING, HAWS_AUTH, HAWS_READY, HAWS_FAILED };
 HaWsPhase haWsPhase = HAWS_OFF;
@@ -1870,9 +1874,6 @@ void haWsSendSubscribe() {
   haWsEntitySig = haWsEntitySignature();
   if (n == 0) return;
 
-  // subscribe_entities (HA 2022.4+): sends the full initial state right away
-  // AND every subsequent change - including transitions to "unavailable",
-  // which subscribe_trigger's state platform does not reliably deliver.
   String msg = "{\"id\":" + String(haWsSubId++) + ",\"type\":\"subscribe_entities\",\"entity_ids\":[";
   for (int i = 0; i < n; i++) { if (i) msg += ","; msg += "\"" + ents[i] + "\""; }
   msg += "]}";
@@ -2232,7 +2233,7 @@ void drawWeatherTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, b
   uiDrawFitted(sprTile, tempText, pad, ty, w - pad * 2 - 12, 4);
   if (weatherKnown) {
     int nw = uiTextWidth(sprTile, tempText, 4);
-    sprTile.drawSmoothCircle(pad + nw + 6, ty + 5, 3, COL_TEXT, COL_PANEL); // degree mark (FreeSans has no U+00B0)
+    sprTile.drawSmoothCircle(pad + nw + 6, ty + 5, 3, COL_TEXT, COL_PANEL); // degree mark, drawn (cleaner than the glyph at this size)
   }
   sprTile.setTextDatum(TL_DATUM);
 
@@ -2944,15 +2945,15 @@ void updateCurrentPageDynamic() {
 }
 
 // =========================================================
-// POLLING
+// POLLING - the fallback when live updates are off (or the socket is down).
+// loop() calls this on page-open and on a timer; the interval stretches
+// right out while the WebSocket is carrying updates.
 // =========================================================
-void pollCurrentPageTiles(bool force) {
+void pollCurrentPageTiles() {
   PageConfig& pg = cfg.pages[currentPageIndex];
   if (strcmp(pg.type, "home") != 0 && strcmp(pg.type, "area") != 0) return;
   if (!haConfigured() || WiFi.status() != WL_CONNECTED) return;
   if (sliderOverlayShown) return; // each fetch blocks - would stutter the drag
-  // With live updates on, polling is only an occasional backstop for
-  // anything the socket missed - loop() stretches the interval way out.
 
   for (int i = 0; i < pg.tileCount; i++) {
     TileConfig& tl = pg.tiles[i];
@@ -3607,7 +3608,7 @@ void handleRoot() {
     h += "<div class='muted' style='margin-top:4px'>Tests the <em>saved</em> URL and token - Save first if you just changed them. A successful save also imports your time zone and location from HA.</div>";
   }
   h += "<div class='check' style='margin-top:16px'><input type='checkbox' id='haLive' name='haLiveUpdates'" +
-       String(cfg.haLiveUpdates ? " checked" : "") + "><label for='haLive' style='margin:0'>Live updates (experimental) &mdash; hold a WebSocket for instant tile changes instead of 30s polling</label></div>";
+       String(cfg.haLiveUpdates ? " checked" : "") + "><label for='haLive' style='margin:0'>Live updates &mdash; hold a WebSocket to HA for near-instant tile changes instead of 30-second polling</label></div>";
   h += "<div class='muted' style='margin-top:2px'>Status: <b>" + htmlEscape(haWsStatusText()) + "</b>";
   if (haWsNote.length() > 0) h += " &middot; " + htmlEscape(haWsNote);
   if (haWsEventCount > 0) h += " &middot; " + String(haWsEventCount) + " updates";
@@ -4694,7 +4695,7 @@ void setupWebServer() {
 void setup() {
   Serial.begin(115200);
   delay(150);
-  Serial.printf("\n=== HA Panel  build %s %s  theme=Tungsten ===\n", __DATE__, __TIME__);
+  Serial.printf("\n=== HA Panel  build %s %s ===\n", __DATE__, __TIME__);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
   analogWrite(BACKLIGHT_PIN, 255);
@@ -4841,7 +4842,7 @@ void loop() {
 
   handleContinuousTouch();
   flushPendingHaCommand(); // run the tap's HA call now, outside the touch pass
-  haWsLoop();              // experimental: HA WebSocket push updates
+  haWsLoop();              // optional HA WebSocket live updates
   ensureWeather();
 
   // Re-probe HA immediately when the Status page is opened, so its readout
@@ -4862,7 +4863,7 @@ void loop() {
     drawCurrentPageFull();
     // Live updates keep tileRuntime current for every page, so a page-open
     // poll is only needed when the socket isn't carrying us.
-    if (!haWsActive()) pollCurrentPageTiles(true);
+    if (!haWsActive()) pollCurrentPageTiles();
     lastPollMs = millis();
   } else {
     updateCurrentPageDynamic();
@@ -4870,7 +4871,7 @@ void loop() {
     // backstop while the socket is up (catches anything it missed).
     unsigned long pollGap = haWsActive() ? 150000UL : POLL_INTERVAL_MS;
     if (millis() - lastPollMs > pollGap) {
-      pollCurrentPageTiles(false);
+      pollCurrentPageTiles();
       lastPollMs = millis();
     }
   }
