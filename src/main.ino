@@ -534,6 +534,8 @@ void setDefaultConfig() {
   cfg.flashPulseRateMs = 500;
   cfg.flashPulseCount = 5;
   cfg.flashBrightnessPct = 25;
+  cfg.flashOnExpire = true;
+  cfg.marqueeEnabled = true;
 
   for (int i = 0; i < 5; i++) cfg.timerPresetSec[i] = DEFAULT_TIMER_PRESETS_SEC[i];
 
@@ -658,6 +660,8 @@ bool loadConfig() {
   cfg.flashPulseRateMs = doc["flashPulseRateMs"] | 500;
   cfg.flashPulseCount = doc["flashPulseCount"] | 5;
   cfg.flashBrightnessPct = constrain((int)(doc["flashBrightnessPct"] | 25), 1, 100);
+  cfg.flashOnExpire = doc["flashOnExpire"] | true;
+  cfg.marqueeEnabled = doc["marqueeEnabled"] | true;
 
   {
     JsonArray presetsSecArr = doc["timerPresetSec"].as<JsonArray>();
@@ -737,6 +741,8 @@ void buildConfigJson(JsonDocument& doc) {
   doc["flashPulseRateMs"] = cfg.flashPulseRateMs;
   doc["flashPulseCount"] = cfg.flashPulseCount;
   doc["flashBrightnessPct"] = cfg.flashBrightnessPct;
+  doc["flashOnExpire"] = cfg.flashOnExpire;
+  doc["marqueeEnabled"] = cfg.marqueeEnabled;
 
   JsonArray presetsOut = doc.createNestedArray("timerPresetSec");
   for (int i = 0; i < 5; i++) presetsOut.add(cfg.timerPresetSec[i]);
@@ -883,7 +889,8 @@ bool timerExpired = false;
 unsigned long timerEndMs = 0;
 unsigned long timerDurationSec = 0; // remembered so Restart can reuse it
 unsigned long timerRemainingSec = 0;
-bool timerFlashOnExpire = false;    // on-device checkbox, per timer session (not persisted)
+// The Timers-page "Flash Lights" toggle is now persisted (cfg.flashOnExpire),
+// defaulting on; the tap handler writes it through to config.
 
 // Timers page preset buttons now come from cfg.timerPresetSec (editable in
 // the web UI) rather than a fixed array here. Presets are stored in
@@ -900,10 +907,11 @@ String formatPresetLabel(int totalSec) {
 // page-update functions) last drew, so it can skip redundant redraws.
 String lastTimersCountdownText = "";
 
-// Red border around the whole screen while a timer is running; blinks
-// once it expires. Re-asserted on top of whatever page content is
-// showing every loop() tick, rather than reserving permanent screen
-// space for it.
+// Flashing red border around the whole screen - only once a timer has
+// EXPIRED (nothing while it's counting down), and only if cfg.marqueeEnabled.
+// It keeps blinking until Stop/Restart clears timerExpired. Re-asserted on
+// top of whatever page is showing every loop() tick rather than reserving
+// permanent screen space.
 bool marqueeCurrentlyDrawn = false;
 bool marqueeVisible = true;
 unsigned long lastMarqueeToggleMs = 0;
@@ -1040,7 +1048,7 @@ void restartTimer() {
 }
 
 void updateMarqueeBorder() {
-  bool active = timerRunning || timerExpired;
+  bool active = timerExpired && cfg.marqueeEnabled;
 
   if (!active) {
     if (marqueeCurrentlyDrawn) {
@@ -1050,15 +1058,12 @@ void updateMarqueeBorder() {
     return;
   }
 
-  bool visible = true;
-  if (timerExpired) {
-    unsigned long now = millis();
-    if (now - lastMarqueeToggleMs >= MARQUEE_BLINK_MS) {
-      marqueeVisible = !marqueeVisible;
-      lastMarqueeToggleMs = now;
-    }
-    visible = marqueeVisible;
+  unsigned long now = millis();
+  if (now - lastMarqueeToggleMs >= MARQUEE_BLINK_MS) {
+    marqueeVisible = !marqueeVisible;
+    lastMarqueeToggleMs = now;
   }
+  bool visible = marqueeVisible;
 
   uint16_t borderColor = visible ? fixColor565(TFT_RED) : COL_BG;
   tft.drawRect(0, 0, SCREEN_W, SCREEN_H, borderColor);
@@ -1080,7 +1085,7 @@ void updateTimerState() {
     marqueeVisible = true;
     lastMarqueeToggleMs = millis();
     pageDirty = true; // Timers page isn't tile-based, so it needs an explicit refresh trigger
-    if (timerFlashOnExpire) startFlashSequence();
+    if (cfg.flashOnExpire) startFlashSequence();
   } else {
     timerRemainingSec = (unsigned long)(remainMs + 999) / 1000UL;
   }
@@ -2562,7 +2567,7 @@ void drawTimersPageFull() {
   const int pw = 46, ph = 20;
   int px = cx + cw / 2 - pw / 2;
   int py = cy + ch - ph - 8;
-  bool on = timerFlashOnExpire;
+  bool on = cfg.flashOnExpire;
   uint16_t track = on ? COL_ACCENT : COL_PANEL_ALT;
   uiFillRR(tft, px, py, pw, ph, ph / 2, track, COL_PANEL);
   uiStrokeRR(tft, px, py, pw, ph, ph / 2, on ? COL_ACCENT : COL_STROKE, track);
@@ -2813,7 +2818,8 @@ void handleTimersPageTap(int x, int y) {
   int cx, cy, cw, ch;
   getSlotRect(5, false, cx, cy, cw, ch);
   if (x >= cx && x < cx + cw && y >= cy && y < cy + ch) {
-    timerFlashOnExpire = !timerFlashOnExpire;
+    cfg.flashOnExpire = !cfg.flashOnExpire;
+    saveConfig(); // remember the choice across reboots
     pageDirty = true;
   }
 }
@@ -3093,9 +3099,17 @@ String pageHeaderHtml(const String& title) {
   h += ".card{border:1px solid var(--border);border-radius:16px;padding:16px 16px 18px;margin:16px 0;}";
   h += "a{color:var(--accent);text-decoration:none;} a:hover{text-decoration:underline;}";
   h += "label{display:block;font-size:13px;color:var(--dim);margin:10px 0 4px;}";
-  h += ".check{display:flex;align-items:center;gap:8px;margin:14px 0 6px;}";
+  h += ".check{display:flex;align-items:center;gap:10px;margin:14px 0 6px;}";
+  h += ".check label{margin:0;}";
   h += ".grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}";
-  h += ".check input{width:18px;height:18px;flex:none;margin:0;}";
+  h += ".check input[type=radio]{width:18px;height:18px;flex:none;margin:0;}";
+  // Checkboxes render as a coloured on/off toggle: grey track = off,
+  // accent track = on.
+  h += ".check input[type=checkbox]{appearance:none;-webkit-appearance:none;position:relative;width:44px;height:26px;flex:none;margin:0;padding:0;border-radius:999px;background:var(--panel2);border:1px solid var(--border);cursor:pointer;transition:background .15s,border-color .15s;}";
+  h += ".check input[type=checkbox]::before{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--dim);transition:transform .15s,background .15s;}";
+  h += ".check input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent);}";
+  h += ".check input[type=checkbox]:checked::before{transform:translateX(18px);background:#0b1f28;}";
+  h += ".check input[type=checkbox]:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}";
   h += "input,select{padding:10px 12px;margin:0;width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:14px;font-family:var(--font);}";
   h += "input:focus,select:focus{outline:none;border-color:var(--accent);}";
   h += "button{padding:9px 16px;margin:10px 6px 0 0;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-family:var(--font);cursor:pointer;}";
@@ -3402,7 +3416,10 @@ void handleRoot() {
   // ---- Timers --------------------------------------------------------
   h += "<section class='card'><h2>Timers</h2>";
 
-  h += "<h3>Light flash on expiry</h3><form method='POST' action='/save-flash'>";
+  h += "<h3>Timer expiry alerts</h3><form method='POST' action='/save-flash'>";
+  h += "<div class='check'><input type='checkbox' id='marqueeEnabled' name='marqueeEnabled'" + String(cfg.marqueeEnabled ? " checked" : "") +
+       "><label for='marqueeEnabled' style='margin:0'>Flash the red screen border until the timer is dismissed</label></div>";
+  h += "<div class='muted' style='margin:2px 0 10px'>The border no longer shows while a timer is just counting down.</div>";
   h += "<label>Pulse rate (ms between on/off)</label><input name='flashRate' value='" + String(cfg.flashPulseRateMs) + "'>";
   h += "<label>Pulse count (full on/off cycles)</label><input name='flashCount' value='" + String(cfg.flashPulseCount) + "'>";
   h += "<label>Dim-phase brightness (%) - the \"on\" phase is always 100%</label>";
@@ -3826,27 +3843,32 @@ void handleSaveNetwork() {
 }
 
 void handleSaveFlash() {
+  // The whole "Timer expiry alerts" card is one form; flashRate is always
+  // present in it, so use that as the marker that these fields were posted
+  // (an unchecked checkbox / no ticked lights are simply absent).
   if (server.hasArg("flashRate")) {
     cfg.flashPulseRateMs = constrain(server.arg("flashRate").toInt(), 100, 5000);
-  }
-  if (server.hasArg("flashCount")) {
-    cfg.flashPulseCount = constrain(server.arg("flashCount").toInt(), 1, 20);
-  }
-  if (server.hasArg("flashBrightness")) {
-    cfg.flashBrightnessPct = constrain(server.arg("flashBrightness").toInt(), 1, 100);
-  }
+    cfg.marqueeEnabled = server.hasArg("marqueeEnabled");
 
-  // Checkboxes with the same name submit one value per checked box, so
-  // this needs to walk every posted arg rather than server.arg(name),
-  // which only returns the first match.
-  String combined = "";
-  for (int i = 0; i < server.args(); i++) {
-    if (server.argName(i) == "flashLight") {
-      if (combined.length() > 0) combined += ",";
-      combined += server.arg(i);
+    if (server.hasArg("flashCount")) {
+      cfg.flashPulseCount = constrain(server.arg("flashCount").toInt(), 1, 20);
     }
+    if (server.hasArg("flashBrightness")) {
+      cfg.flashBrightnessPct = constrain(server.arg("flashBrightness").toInt(), 1, 100);
+    }
+
+    // Checkboxes with the same name submit one value per checked box, so
+    // this needs to walk every posted arg rather than server.arg(name),
+    // which only returns the first match.
+    String combined = "";
+    for (int i = 0; i < server.args(); i++) {
+      if (server.argName(i) == "flashLight") {
+        if (combined.length() > 0) combined += ",";
+        combined += server.arg(i);
+      }
+    }
+    strlcpy(cfg.flashLightIds, combined.c_str(), sizeof(cfg.flashLightIds));
   }
-  strlcpy(cfg.flashLightIds, combined.c_str(), sizeof(cfg.flashLightIds));
 
   saveConfig();
 
@@ -4522,5 +4544,5 @@ void loop() {
     }
   }
 
-  updateMarqueeBorder(); // re-asserted on top every tick while a timer is running
+  updateMarqueeBorder(); // flashes on top every tick once a timer has expired
 }

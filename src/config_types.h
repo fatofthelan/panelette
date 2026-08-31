@@ -54,6 +54,8 @@ struct DeviceConfig {
   int flashPulseRateMs;    // ms between on/off transitions
   int flashPulseCount;     // number of full on-off cycles
   int flashBrightnessPct;  // dim phase target for light.* entities; "on" phase is always 100
+  bool flashOnExpire;      // persisted state of the Timers-page "Flash Lights" toggle (default on)
+  bool marqueeEnabled;     // true = flash the red screen border when a timer expires (default on)
   int timerPresetSec[5];   // editable Timers-page preset buttons, in seconds (supports sub-minute presets)
   bool customPageOrder;    // false = auto (Home, areas, Forecast, Timers, Status); true = user drag order kept as-is
   bool useStaticIp;        // false = DHCP (default); true = use the fields below (applied at boot, before WiFi.begin)
