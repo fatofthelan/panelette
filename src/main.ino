@@ -165,7 +165,7 @@ const int GRID_Y[3]  = {42, 120, 198};
 const int CELL_W     = 108;
 const int CELL_H     = 70;
 const int CELL_GAP   = 8; // gap between the two columns
-const int CARD_RADIUS = 10; // rounded-rect corner for tiles / cards / buttons (theme A)
+const int CARD_RADIUS = 14; // rounded-rect corner for tiles / cards / buttons (theme B)
 
 // =========================================================
 // THEME
@@ -199,33 +199,31 @@ static uint16_t fixColor565(uint16_t c) {
   return (uint16_t)(~c);
 }
 
-// Theme direction "A - Tungsten": a dark room with a warm lamp in it.
-// Warm-black ground, warm-paper text, one incandescent-amber accent that
-// only appears where something is on. Both themes carry a hairline card
-// border. RGB565 literals below; the trailing comment is the ~8-bit hex.
+// Theme direction "B - Daylight": light-first, near-white cards on a cool
+// paper ground, one fresh teal accent, no card borders in light mode
+// (fill contrast carries it). RGB565 literals; trailing comment is ~8-bit.
 bool showTileBorder;
 
 void applyTheme(bool dark) {
   if (dark) {
-    COL_BG        = fixColor565(0x10A1); // #17140f  warm near-black
-    COL_PANEL     = fixColor565(0x39A5); // #3d352a  warm dark taupe
-    COL_PANEL_ALT = fixColor565(0x4A27); // #4e453a
-    COL_STROKE    = fixColor565(0x6B0A); // #6b6152  warm grey hairline
-    COL_TEXT      = fixColor565(0xF79C); // #f6f0e2  warm paper
-    COL_DIM       = fixColor565(0xAD11); // #aba28f
-    COL_ACCENT    = fixColor565(0xFCE5); // #ff9d2e  incandescent amber
+    COL_BG        = fixColor565(0x10A3); // #12161c
+    COL_PANEL     = fixColor565(0x1905); // #1d232c
+    COL_PANEL_ALT = fixColor565(0x2167); // #262d38
+    COL_STROKE    = fixColor565(0x31C8); // #333b47
+    COL_TEXT      = fixColor565(0xEF7E); // #e8ecf0
+    COL_DIM       = fixColor565(0x8C94); // #8892a0
+    COL_ACCENT    = fixColor565(0x2DF5); // #2bbfa9  teal
   } else {
-    COL_BG        = fixColor565(0xE71A); // #e7e2d6  warm paper
-    COL_PANEL     = fixColor565(0xFFDE); // #fbf8f1
-    COL_PANEL_ALT = fixColor565(0xEF5B); // #efe9db
-    COL_STROKE    = fixColor565(0xD677); // #d6cdba
-    COL_TEXT      = fixColor565(0x2924); // #2a2620  warm near-black
-    COL_DIM       = fixColor565(0x83EE); // #877e70
-    COL_ACCENT    = fixColor565(0xB343); // #b26a18  deeper amber for light
+    COL_BG        = fixColor565(0xEF5D); // #e8ebee  cool paper
+    COL_PANEL     = fixColor565(0xFFFF); // #ffffff
+    COL_PANEL_ALT = fixColor565(0xEF9E); // #eef1f3
+    COL_STROKE    = fixColor565(0xD6DB); // #d3d8dc
+    COL_TEXT      = fixColor565(0x1926); // #182430  ink
+    COL_DIM       = fixColor565(0x638F); // #657079
+    COL_ACCENT    = fixColor565(0x0CF1); // #0e9c8a  teal
   }
-  showTileBorder = true;
-  // Warm amber wash behind an "on" tile - subtle, tracks the panel colour.
-  COL_PANEL_LIT = blendColor565(COL_PANEL, COL_ACCENT, dark ? 16 : 14);
+  showTileBorder = dark;                 // light mode: no borders, fill contrast + shadow
+  COL_PANEL_LIT = blendColor565(COL_PANEL, COL_ACCENT, dark ? 22 : 12);
 }
 
 // =========================================================
@@ -510,7 +508,7 @@ void setDefaultConfig() {
   makeDefaultDeviceName(cfg.deviceName, sizeof(cfg.deviceName));
   strlcpy(cfg.haUrl, HA_URL_DEFAULT, sizeof(cfg.haUrl));
   cfg.haToken[0] = '\0';
-  cfg.darkTheme = true;
+  cfg.darkTheme = false; // theme B is light-first
   cfg.use12Hour = false;
   cfg.flipScreen = false;
   cfg.uiFontSize = 1;
@@ -1874,7 +1872,8 @@ void makeSpriteCard(TFT_eSprite& spr, int w, int h, int fillColorOverride = -1) 
   // background first makes those corners blend in instead of showing
   // stale pixel garbage.
   spr.fillSprite(COL_BG);
-  spr.fillRoundRect(0, 0, w, h, CARD_RADIUS, fillColor);
+  // Anti-aliased corners (theme B) - blends the curve against the page bg.
+  spr.fillSmoothRoundRect(0, 0, w, h, CARD_RADIUS, fillColor, COL_BG);
   if (showTileBorder) spr.drawRoundRect(0, 0, w, h, CARD_RADIUS, COL_STROKE);
 }
 
@@ -2094,9 +2093,8 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   bool useLitBg = isLight && rt.on;
   uint16_t bgColor = useLitBg ? COL_PANEL_LIT : COL_PANEL;
   makeSpriteCard(sprTile, w, h, useLitBg ? (int)COL_PANEL_LIT : -1);
-  if (useLitBg) sprTile.drawRoundRect(0, 0, w, h, CARD_RADIUS, COL_ACCENT); // amber rim = glow
+  if (useLitBg) sprTile.drawSmoothRoundRect(0, 0, CARD_RADIUS, CARD_RADIUS - 1, w, h, COL_ACCENT, COL_PANEL_LIT); // teal rim
 
-  const uint16_t warmColor = resolveBulbColor();
   const int pad = 12; // clears the CARD_RADIUS corner
   bool activeState = ((isLight || isSwitch) && rt.on);
 
@@ -2118,7 +2116,7 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   // --- Type icon: bottom-right, out of the label's way ---
   int mIconX = w - 19;
   int mIconY = h - 19;
-  if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on, warmColor);
+  if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on, COL_ACCENT);
   else if (isSwitch) drawMiniSwitch(sprTile, mIconX, mIconY, rt.on, COL_ACCENT);
   else               drawMiniSensor(sprTile, mIconX, mIconY, COL_DIM);
 
@@ -2261,12 +2259,19 @@ void drawGridBackground() {
 
   tft.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H - FOOTER_H, COL_BG);
 
+  // Soft drop shadow under each card (light mode only - it needs a lighter
+  // ground to read against). Drawn now; the tile sprite pushes over the
+  // card itself and leaves the offset edge peeking out bottom-right.
+  bool shadow = !showTileBorder;
+  uint16_t shadowCol = fixColor565(0xCE9A); // #ccd0d4, ~1 step darker than the light bg
+
   for (int i = 0; i < pg.tileCount; i++) {
     if (slotOf[i] < 0) continue;
     bool wide = (pg.tiles[i].size == 2);
     int x, y, w, h;
     getSlotRect(slotOf[i], wide, x, y, w, h);
-    tft.fillRoundRect(x, y, w, h, CARD_RADIUS, COL_PANEL);
+    if (shadow) tft.fillSmoothRoundRect(x + 2, y + 3, w, h, CARD_RADIUS, shadowCol, COL_BG);
+    tft.fillSmoothRoundRect(x, y, w, h, CARD_RADIUS, COL_PANEL, COL_BG);
     if (showTileBorder) tft.drawRoundRect(x, y, w, h, CARD_RADIUS, COL_STROKE);
   }
 }
