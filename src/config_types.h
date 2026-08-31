@@ -19,6 +19,7 @@ struct TileConfig {
   char label[24];
   char entityId[48];  // e.g. "light.tobias_bedside"
   uint8_t size;        // 1 = single cell, 2 = wide (spans both columns)
+  bool dateEuro;       // "date"/"datewide" tiles: false = M/D/Y (US, default), true = D/M/Y
 };
 
 struct PageConfig {

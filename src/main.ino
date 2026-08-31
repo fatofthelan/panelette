@@ -704,6 +704,7 @@ bool loadConfig() {
       strlcpy(tl.entityId, t["entity_id"] | "", sizeof(tl.entityId));
       tl.size = (uint8_t)(t["size"] | 1);
       if (tl.size != 2) tl.size = 1;
+      tl.dateEuro = t["date_euro"] | false;
       pg.tileCount++;
     }
     cfg.pageCount++;
@@ -765,6 +766,7 @@ void buildConfigJson(JsonDocument& doc) {
       t["label"] = tl.label;
       t["entity_id"] = tl.entityId;
       t["size"] = tl.size;
+      t["date_euro"] = tl.dateEuro;
     }
   }
 }
@@ -1973,6 +1975,66 @@ void drawSunTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool 
   pushSpriteAndDelete(sprTile, x, y);
 }
 
+// Numeric date, no leading zeros, matching the format the user picked per
+// tile: false = M/D/YYYY (US, default), true = D/M/YYYY.
+String formatDateNumeric(const struct tm& t, bool euro) {
+  char b[16];
+  int mo = t.tm_mon + 1, d = t.tm_mday, y = t.tm_year + 1900;
+  if (euro) snprintf(b, sizeof(b), "%d/%d/%d", d, mo, y);
+  else      snprintf(b, sizeof(b), "%d/%d/%d", mo, d, y);
+  return String(b);
+}
+
+// Small tear-off-calendar glyph: rounded page, header rule, two binding tabs.
+template<typename T>
+void drawCalendarIcon(T& d, int cx, int cy, uint16_t c, uint16_t bg) {
+  const int cw = 16, chh = 15;
+  int x0 = cx - cw / 2, y0 = cy - chh / 2 + 1;
+  uiStrokeRR(d, x0, y0, cw, chh, 3, c, bg);
+  d.drawFastHLine(x0 + 2, y0 + 4, cw - 4, c);       // header rule under the "month" strip
+  d.drawFastVLine(x0 + 4, y0 - 2, 3, c);            // binding tabs poking above the top edge
+  d.drawFastVLine(x0 + cw - 5, y0 - 2, 3, c);
+}
+
+// mode 0 = compact numeric ("8/30/2026"); mode 1 = weekday-focused for a
+// wide tile ("Sunday" big, date small underneath).
+void drawDateTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool force, bool euro, int mode) {
+  TileRuntime& rt = tileRuntime[currentPageIndex][tileIdx];
+
+  time_t now = time(nullptr);
+  bool known = (now > 1700000000); // NTP has synced
+  struct tm t = {};
+  if (known) localtime_r(&now, &t);
+
+  String dateStr = known ? formatDateNumeric(t, euro) : "--/--/----";
+  String dayStr = "...";
+  if (known) { char db[16]; strftime(db, sizeof(db), "%A", &t); dayStr = String(db); }
+
+  String combined = "DATE" + String(mode) + "|" + dayStr + "|" + dateStr + "|" + String(COL_PANEL);
+  if (!force && combined == rt.cacheKey) return;
+  rt.cacheKey = combined;
+
+  makeSpriteCard(sprTile, w, h);
+  const int pad = 10;
+
+  drawTileLabel(sprTile, "Date", pad, w, w - pad - 26, COL_PANEL);
+
+  if (mode == 1) {
+    drawCalendarIcon(sprTile, w - 21, h - 18, COL_DIM, COL_PANEL);
+    sprTile.setTextColor(COL_TEXT, COL_PANEL);
+    uiDrawFitted(sprTile, dayStr, pad, h - 42, w - pad * 2 - 18, 4);
+    sprTile.setTextColor(COL_DIM, COL_PANEL);
+    uiDrawFitted(sprTile, dateStr, pad, h - 18, w - pad * 2, 2);
+  } else {
+    drawCalendarIcon(sprTile, w - 19, h - 18, COL_DIM, COL_PANEL);
+    sprTile.setTextColor(COL_TEXT, COL_PANEL);
+    uiDrawFitted(sprTile, dateStr, pad, h - 27, w - pad - 22, 2);
+  }
+
+  sprTile.setTextDatum(TL_DATUM);
+  pushSpriteAndDelete(sprTile, x, y);
+}
+
 // Post-tap "Sent" flash for a scene/script/button tile. -1 page = none.
 int actionFlashPage = -1;
 int actionFlashTile = -1;
@@ -2002,6 +2064,8 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   if (strcmp(tl.type, "sunrise") == 0) { drawSunTileSprite(tileIdx, x, y, w, h, wide, force, 0); return; }
   if (strcmp(tl.type, "sunset") == 0)  { drawSunTileSprite(tileIdx, x, y, w, h, wide, force, 1); return; }
   if (strcmp(tl.type, "sun") == 0)     { drawSunTileSprite(tileIdx, x, y, w, h, wide, force, 2); return; }
+  if (strcmp(tl.type, "date") == 0)     { drawDateTileSprite(tileIdx, x, y, w, h, wide, force, tl.dateEuro, 0); return; }
+  if (strcmp(tl.type, "datewide") == 0) { drawDateTileSprite(tileIdx, x, y, w, h, wide, force, tl.dateEuro, 1); return; }
 
   bool isAction = (strcmp(tl.type, "scene") == 0 || strcmp(tl.type, "script") == 0 ||
                    strcmp(tl.type, "button") == 0);
@@ -2429,13 +2493,16 @@ void drawTimersPageFull() {
   getSlotRect(5, false, cx, cy, cw, ch);
   uiFillRR(tft, cx, cy, cw, ch, gCardRadius, COL_PANEL);
   if (showTileBorder) uiStrokeRR(tft, cx, cy, cw, ch, gCardRadius, COL_STROKE, COL_PANEL);
+  // "Flash Lights" on one line overruns the tile in the wider mono
+  // typeface - stack it as two words instead.
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_DIM, COL_PANEL);
-  uiDrawString(tft, "Flash Lights", cx + cw / 2, cy + 6, 1);
+  uiDrawFitted(tft, "Flash", cx + cw / 2, cy + 3, cw - 8, 1, false);
+  uiDrawFitted(tft, "Lights", cx + cw / 2, cy + 15, cw - 8, 1, false);
 
   int boxSize = 24;
   int boxX = cx + cw / 2 - boxSize / 2;
-  int boxY = cy + ch / 2 - boxSize / 2 + 6;
+  int boxY = cy + ch / 2 - boxSize / 2 + 8;
   uiStrokeRR(tft, boxX, boxY, boxSize, boxSize, 4, COL_STROKE, COL_PANEL);
   if (timerFlashOnExpire) {
     uiFillRR(tft, boxX + 4, boxY + 4, boxSize - 8, boxSize - 8, 2, COL_ACCENT, COL_PANEL);
@@ -3362,9 +3429,12 @@ void handlePageManage() {
     h += "<option value='sunrise'>Sunrise time</option>";
     h += "<option value='sunset'>Sunset time</option>";
     h += "<option value='sun'>Sunrise + Sunset (use a wide tile)</option>";
+    h += "<option value='date'>Date (8/30/2026)</option>";
+    h += "<option value='datewide'>Date + weekday (use a wide tile)</option>";
     h += "</select>";
     h += "<label>Label</label><input name='label' placeholder='e.g. Bedside Lamp'>";
-    h += "<label>Entity ID (not used for Weather / Timer / Sun tiles)</label>";
+    h += "<div class='check'><input type='checkbox' id='dateEuro' name='dateEuro'><label for='dateEuro' style='margin:0'>Date tiles: day/month order (30/8/2026) &mdash; unchecked is US month/day</label></div>";
+    h += "<label>Entity ID (not used for Weather / Timer / Sun / Date tiles)</label>";
     h += "<input name='entityId' list='entlist' autocomplete='off' placeholder='e.g. light.tobias_bedside'>";
     h += "<datalist id='entlist'></datalist>";
     h += "<div class='muted' id='entHint'></div>";
@@ -3425,13 +3495,14 @@ void handleTileEditForm() {
   h += "<input type='hidden' name='index' value='" + String(idx) + "'>";
 
   h += "<label>Type</label><select name='type'>";
-  const char* types[11] = {"light", "switch", "sensor", "scene", "script", "button",
-                           "weather", "timer", "sunrise", "sunset", "sun"};
-  const char* typeLabels[11] = {"Light (toggle + dim)", "Switch (toggle only)", "Sensor (read-only)",
+  const char* types[13] = {"light", "switch", "sensor", "scene", "script", "button",
+                           "weather", "timer", "sunrise", "sunset", "sun", "date", "datewide"};
+  const char* typeLabels[13] = {"Light (toggle + dim)", "Switch (toggle only)", "Sensor (read-only)",
                                 "Scene (tap to activate)", "Script (tap to run)", "Button (tap to press)",
                                 "Weather (icon + temperature)", "Timer (countdown status)",
-                                "Sunrise time", "Sunset time", "Sunrise + Sunset (use a wide tile)"};
-  for (int i = 0; i < 11; i++) {
+                                "Sunrise time", "Sunset time", "Sunrise + Sunset (use a wide tile)",
+                                "Date (8/30/2026)", "Date + weekday (use a wide tile)"};
+  for (int i = 0; i < 13; i++) {
     h += "<option value='" + String(types[i]) + "'";
     if (strcmp(tl.type, types[i]) == 0) h += " selected";
     h += ">" + String(typeLabels[i]) + "</option>";
@@ -3439,7 +3510,9 @@ void handleTileEditForm() {
   h += "</select>";
 
   h += "<label>Label</label><input name='label' value='" + htmlEscape(tl.label) + "'>";
-  h += "<label>Entity ID (not used for Weather / Timer / Sun tiles)</label>";
+  h += "<div class='check'><input type='checkbox' id='dateEuro' name='dateEuro'" + String(tl.dateEuro ? " checked" : "") +
+       "><label for='dateEuro' style='margin:0'>Date tiles: day/month order (30/8/2026) &mdash; unchecked is US month/day</label></div>";
+  h += "<label>Entity ID (not used for Weather / Timer / Sun / Date tiles)</label>";
   h += "<input name='entityId' list='entlist' autocomplete='off' value='" + htmlEscape(tl.entityId) + "'>";
   h += "<datalist id='entlist'></datalist>";
   h += "<div class='muted' id='entHint'></div>";
@@ -3485,6 +3558,7 @@ void handleTileUpdate() {
         strlcpy(tl.label, label.c_str(), sizeof(tl.label));
         strlcpy(tl.entityId, entityId.c_str(), sizeof(tl.entityId));
         tl.size = (uint8_t)newSize;
+        tl.dateEuro = server.hasArg("dateEuro");
 
         // Runtime state (on/off/brightness/cache) may no longer apply if the
         // entity or type changed - clear it so the tile refetches cleanly.
@@ -3808,6 +3882,7 @@ void handleTileAdd() {
         strlcpy(tl.label, label.c_str(), sizeof(tl.label));
         strlcpy(tl.entityId, entityId.c_str(), sizeof(tl.entityId));
         tl.size = (uint8_t)size;
+        tl.dateEuro = server.hasArg("dateEuro");
         pg->tileCount++;
         saveConfig();
         pageDirty = true;
@@ -3898,6 +3973,7 @@ void handleTileAddBulk() {
       strlcpy(tl.label, label.c_str(), sizeof(tl.label));
       strlcpy(tl.entityId, eid.c_str(), sizeof(tl.entityId));
       tl.size = 1;
+      tl.dateEuro = false;
       pg->tileCount++;
       used++;
     }
