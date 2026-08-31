@@ -414,7 +414,7 @@ int uiTextWidth(T& d, const String& text, int fontNum) {
 // truncation. Draws the result directly rather than returning text for
 // a separate draw call, since the font actually used can change here.
 template<typename T>
-void uiDrawFitted(T& d, const String& text, int x, int y, int maxWidth, int preferredFont) {
+void uiDrawFitted(T& d, const String& text, int x, int y, int maxWidth, int preferredFont, bool ellipsis = true) {
   bool classic = (strlen(cfg.uiTypeface) == 0) || strcmp(cfg.uiTypeface, "classic") == 0;
   int useFont = preferredFont;
 
@@ -424,12 +424,12 @@ void uiDrawFitted(T& d, const String& text, int x, int y, int maxWidth, int pref
 
   String fitted = text;
   if (uiTextWidth(d, fitted, useFont) > maxWidth) {
-    const String ellipsis = "...";
-    int ellipsisW = uiTextWidth(d, ellipsis, useFont);
-    while (fitted.length() > 1 && uiTextWidth(d, fitted, useFont) + ellipsisW > maxWidth) {
+    const String tail = ellipsis ? String("...") : String("");
+    int tailW = uiTextWidth(d, tail, useFont);
+    while (fitted.length() > 1 && uiTextWidth(d, fitted, useFont) + tailW > maxWidth) {
       fitted.remove(fitted.length() - 1);
     }
-    fitted += ellipsis;
+    fitted += tail;
   }
 
   uiDrawString(d, fitted, x, y, useFont);
@@ -1872,7 +1872,7 @@ void drawTimerTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, boo
 
   sprTile.setTextDatum(TL_DATUM);
   sprTile.setTextColor(COL_DIM, COL_PANEL);
-  uiDrawFitted(sprTile, "Timer", pad, 10, w - pad - 26, 1);
+  uiDrawFitted(sprTile, "Timer", pad, 10, w - pad - 26, 1, false);
 
   drawClockIcon(sprTile, w - 22, 23, timerRunning ? COL_ACCENT : COL_DIM, 0.8f);
 
@@ -1900,7 +1900,7 @@ void drawWeatherTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, b
   sprTile.setTextDatum(TL_DATUM);
   sprTile.setTextColor(COL_DIM, COL_PANEL);
   uiDrawFitted(sprTile, weatherKnown ? weatherCodeLabel(weatherCurrentCode) : "Weather",
-               pad, 10, w - pad - 30, 1);
+               pad, 10, w - pad - 30, 1, false);
 
   if (weatherKnown) {
     drawWeatherIcon(sprTile, w - 25, 25, weatherCurrentCode, 0.8f, weatherIsDay, COL_PANEL);
@@ -1965,7 +1965,7 @@ void drawSunTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool 
     const int pad = 12;
     sprTile.setTextDatum(TL_DATUM);
     sprTile.setTextColor(COL_DIM, COL_PANEL);
-    uiDrawFitted(sprTile, rise ? "Sunrise" : "Sunset", pad, 10, w - pad - 24, 1);
+    uiDrawFitted(sprTile, rise ? "Sunrise" : "Sunset", pad, 10, w - pad - 24, 1, false);
     drawSunHorizonIcon(sprTile, w - 21, 22, rise, COL_DIM);
     sprTile.setTextColor(COL_TEXT, COL_PANEL);
     uiDrawFitted(sprTile, rise ? riseT : setT, pad, h - 27, w - pad * 2, 2);
@@ -2065,10 +2065,10 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   const int pad = 12; // clears the CARD_RADIUS corner
   bool activeState = ((isLight || isSwitch) && rt.on);
 
-  // --- Label: full width across the top ---
+  // --- Label: full width across the top, hard-cut (no "...") ---
   sprTile.setTextDatum(TL_DATUM);
   sprTile.setTextColor(COL_DIM, bgColor);
-  uiDrawFitted(sprTile, tl.label, pad, 10, w - pad * 2, 1);
+  uiDrawFitted(sprTile, tl.label, pad, 10, w - pad - 6, 1, false);
 
   // --- Value: bottom-left, the tile's focal point ---
   bool shortVal = (stateText.length() <= 4);
@@ -2286,12 +2286,8 @@ void drawStatusPageFull() {
   tft.setTextColor(COL_DIM, COL_BG);
   uiDrawString(tft, "HA", 12, y, rowFont);
   tft.setTextColor(COL_TEXT, COL_BG);
-  uiDrawString(tft, haConnLabel(haConnState), 80, y, rowFont);
-  // Right-aligned hint: this row is tappable to force an immediate re-test.
-  tft.setTextDatum(TR_DATUM);
-  tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, "tap to test", SCREEN_W - 12, y, 1);
-  tft.setTextDatum(TL_DATUM);
+  uiDrawFitted(tft, haConnLabel(haConnState), 80, y, SCREEN_W - 80 - 12, rowFont, false);
+  // (tapping this row re-probes the HA connection - no room for a hint here)
 
   // Narrower buttons than before (32px) to fit three - cap the label font
   // so Large text size doesn't overflow them.
