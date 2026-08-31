@@ -391,6 +391,42 @@ void applyCornerStyle() {
   gCardRadius = (strcmp(cfg.cornerStyle, "square") == 0) ? 3 : 14;
 }
 
+// =========================================================
+// Anti-aliased primitive wrappers - "smooth all the things".
+// =========================================================
+// Every rounded rect / circle on the device goes through these instead of
+// the jagged Bresenham fillRoundRect/drawRoundRect/fillCircle/drawCircle.
+// `bg` is the colour the anti-aliased edge blends toward: pass the surface
+// the shape sits on (COL_BG for anything drawn straight onto the screen,
+// the local panel/sprite fill otherwise). UI_AA_READ samples the actual
+// pixel underneath - correct for shapes drawn into a sprite whose local
+// background varies, at the cost of a per-edge-pixel read.
+static const uint32_t UI_AA_READ = 0x00FFFFFF;
+
+template<typename T>
+void uiFillRR(T& d, int x, int y, int w, int h, int r, uint16_t col, uint32_t bg = COL_BG) {
+  d.fillSmoothRoundRect(x, y, w, h, r, col, bg);
+}
+
+template<typename T>
+void uiStrokeRR(T& d, int x, int y, int w, int h, int r, uint16_t col, uint32_t bg = COL_BG) {
+  d.drawSmoothRoundRect(x, y, r, r > 1 ? r - 1 : 0, w, h, col, bg);
+}
+
+template<typename T>
+void uiFillCircle(T& d, int x, int y, int r, uint16_t col, uint32_t bg = UI_AA_READ) {
+  d.fillSmoothCircle(x, y, r, col, bg);
+}
+
+// Anti-aliased ring: outer disc in `col`, inner disc (r - thick) punched
+// back to `inner`. Both edges sample the real background so it composites
+// cleanly over sprites and panels alike.
+template<typename T>
+void uiRingCircle(T& d, int x, int y, int r, uint16_t col, uint16_t inner, int thick = 2) {
+  d.fillSmoothCircle(x, y, r, col, UI_AA_READ);
+  if (r - thick > 0) d.fillSmoothCircle(x, y, r - thick, inner, UI_AA_READ);
+}
+
 // Every on-device text draw goes through these. The active .vlw font is
 // always loaded (gFontBase); fontNum >= 4 swaps in the larger cut for the
 // duration of the call. gForceUpper (mono typeface) uppercases everything.
@@ -477,13 +513,13 @@ void setDefaultConfig() {
   makeDefaultDeviceName(cfg.deviceName, sizeof(cfg.deviceName));
   strlcpy(cfg.haUrl, HA_URL_DEFAULT, sizeof(cfg.haUrl));
   cfg.haToken[0] = '\0';
-  cfg.darkTheme = false;
+  cfg.darkTheme = true;
   cfg.use12Hour = false;
   cfg.flipScreen = false;
   cfg.uiFontSize = 1;
-  strlcpy(cfg.uiTypeface, "sans", sizeof(cfg.uiTypeface));       // sans | mono
-  strlcpy(cfg.colorScheme, "cool", sizeof(cfg.colorScheme));     // cool | warm | phosphor | neutral
-  strlcpy(cfg.cornerStyle, "rounded", sizeof(cfg.cornerStyle));  // rounded | square
+  strlcpy(cfg.uiTypeface, "mono", sizeof(cfg.uiTypeface));           // sans | mono
+  strlcpy(cfg.colorScheme, "phosphor", sizeof(cfg.colorScheme));     // cool | warm | phosphor | neutral
+  strlcpy(cfg.cornerStyle, "square", sizeof(cfg.cornerStyle));       // rounded | square
   cfg.uiBoldText = false;
   strlcpy(cfg.bulbColorKey, "amber", sizeof(cfg.bulbColorKey));
   strlcpy(cfg.timezone, "us_pacific", sizeof(cfg.timezone));
@@ -1194,23 +1230,25 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
   uint16_t cloudStroke = fixColor565(0x8C72);
   uint16_t rainColor = fixColor565(0x44FF);
 
+  uint16_t bg = (cutColor == 0x0000) ? COL_BG : cutColor;
+
   if (code == 0) {
     if (isDay) {
       // Clear / sunny
-      d.fillCircle(cx, cy, S(9), sunColor);
-      d.drawLine(cx, cy - S(15), cx, cy - S(11), sunColor);
-      d.drawLine(cx, cy + S(11), cx, cy + S(15), sunColor);
-      d.drawLine(cx - S(15), cy, cx - S(11), cy, sunColor);
-      d.drawLine(cx + S(11), cy, cx + S(15), cy, sunColor);
-      d.drawLine(cx - S(11), cy - S(11), cx - S(8), cy - S(8), sunColor);
-      d.drawLine(cx + S(11), cy - S(11), cx + S(8), cy - S(8), sunColor);
-      d.drawLine(cx - S(11), cy + S(11), cx - S(8), cy + S(8), sunColor);
-      d.drawLine(cx + S(11), cy + S(11), cx + S(8), cy + S(8), sunColor);
+      uiFillCircle(d, cx, cy, S(9), sunColor);
+      d.drawWideLine(cx, cy - S(15), cx, cy - S(11), 1.4f, sunColor, bg);
+      d.drawWideLine(cx, cy + S(11), cx, cy + S(15), 1.4f, sunColor, bg);
+      d.drawWideLine(cx - S(15), cy, cx - S(11), cy, 1.4f, sunColor, bg);
+      d.drawWideLine(cx + S(11), cy, cx + S(15), cy, 1.4f, sunColor, bg);
+      d.drawWideLine(cx - S(11), cy - S(11), cx - S(8), cy - S(8), 1.4f, sunColor, bg);
+      d.drawWideLine(cx + S(11), cy - S(11), cx + S(8), cy - S(8), 1.4f, sunColor, bg);
+      d.drawWideLine(cx - S(11), cy + S(11), cx - S(8), cy + S(8), 1.4f, sunColor, bg);
+      d.drawWideLine(cx + S(11), cy + S(11), cx + S(8), cy + S(8), 1.4f, sunColor, bg);
     } else {
       // Clear / night - crescent moon: a filled disc with a second disc,
       // in the background color, punched out of one side.
-      d.fillCircle(cx, cy, S(9), sunColor);
-      d.fillCircle(cx + S(5), cy - S(3), S(8), cutColor);
+      uiFillCircle(d, cx, cy, S(9), sunColor);
+      uiFillCircle(d, cx + S(5), cy - S(3), S(8), bg);
     }
     return;
   }
@@ -1225,9 +1263,9 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
 
   int cloudCy = cy - S(2);
   if (code >= 1 && code <= 3) {
-    d.fillCircle(cx - S(7), cloudCy - S(7), S(6), sunColor); // sun/moon peeking out for partly-cloudy
+    uiFillCircle(d, cx - S(7), cloudCy - S(7), S(6), sunColor); // sun/moon peeking out for partly-cloudy
     if (!isDay) {
-      d.fillCircle(cx - S(4), cloudCy - S(9), S(5), cutColor); // crescent cutout
+      uiFillCircle(d, cx - S(4), cloudCy - S(9), S(5), bg); // crescent cutout
     }
   }
 
@@ -1235,24 +1273,24 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
   // Filled first, then each bump's own outline drawn on top - the
   // outline is what actually reads as "cloud" rather than a blob, since
   // three same-color filled circles alone merge into one shapeless mass.
-  d.fillCircle(cx - S(6), cloudCy, S(7), cloudFill);
-  d.fillCircle(cx + S(5), cloudCy, S(8), cloudFill);
-  d.fillCircle(cx, cloudCy - S(4), S(7), cloudFill);
-  d.fillRoundRect(cx - S(10), cloudCy, S(22), S(8), S(4), cloudFill);
-  d.drawCircle(cx - S(6), cloudCy, S(7), cloudStroke);
-  d.drawCircle(cx + S(5), cloudCy, S(8), cloudStroke);
-  d.drawCircle(cx, cloudCy - S(4), S(7), cloudStroke);
-  d.drawRoundRect(cx - S(10), cloudCy, S(22), S(8), S(4), cloudStroke);
+  uiFillCircle(d, cx - S(6), cloudCy, S(7), cloudFill);
+  uiFillCircle(d, cx + S(5), cloudCy, S(8), cloudFill);
+  uiFillCircle(d, cx, cloudCy - S(4), S(7), cloudFill);
+  uiFillRR(d, cx - S(10), cloudCy, S(22), S(8), S(4), cloudFill, bg);
+  d.drawSmoothCircle(cx - S(6), cloudCy, S(7), cloudStroke, cloudFill);
+  d.drawSmoothCircle(cx + S(5), cloudCy, S(8), cloudStroke, cloudFill);
+  d.drawSmoothCircle(cx, cloudCy - S(4), S(7), cloudStroke, cloudFill);
+  d.drawFastHLine(cx - S(10), cloudCy + S(8), S(22), cloudStroke); // flat base edge
 
   if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
     // Rain
     for (int i = -1; i <= 1; i++) {
-      d.drawLine(cx + i * S(7), cloudCy + S(9), cx + i * S(7) - S(2), cloudCy + S(15), rainColor);
+      d.drawWideLine(cx + i * S(7), cloudCy + S(9), cx + i * S(7) - S(2), cloudCy + S(15), 1.4f, rainColor, bg);
     }
   } else if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86)) {
     // Snow
     for (int i = -1; i <= 1; i++) {
-      d.fillCircle(cx + i * S(7), cloudCy + S(12), max(1, S(1)), cloudFill);
+      uiFillCircle(d, cx + i * S(7), cloudCy + S(12), max(1, S(1)), cloudFill);
     }
   } else if (code >= 95) {
     // Thunderstorm - simple bolt
@@ -1263,11 +1301,11 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
 
 // Simple clock face for the Timer tile type.
 template<typename T>
-void drawClockIcon(T& d, int cx, int cy, uint16_t iconColor, float scale = 1.0f) {
+void drawClockIcon(T& d, int cx, int cy, uint16_t iconColor, float scale = 1.0f, uint16_t bg = COL_BG) {
   auto S = [scale](int v) { return (int)roundf(v * scale); };
   int r = S(12);
 
-  d.drawCircle(cx, cy, r, iconColor);
+  d.drawSmoothCircle(cx, cy, r, iconColor, bg);
 
   // Small tick marks at 12/3/6/9, like a clean SF Symbols-style clock
   // face, instead of a bare outline.
@@ -1277,15 +1315,10 @@ void drawClockIcon(T& d, int cx, int cy, uint16_t iconColor, float scale = 1.0f)
   d.drawFastHLine(cx - r, cy, tickLen, iconColor);
   d.drawFastHLine(cx + r - tickLen, cy, tickLen, iconColor);
 
-  // Hands with a small filled hub, drawn thicker via two adjacent lines
-  // rather than TFT_eSPI's thin single-pixel drawLine.
-  int minX = cx, minY = cy - S(8);
-  int hrX = cx + S(6), hrY = cy + S(2);
-  d.drawLine(cx, cy, minX, minY, iconColor);
-  d.drawLine(cx + 1, cy, minX + 1, minY, iconColor);
-  d.drawLine(cx, cy, hrX, hrY, iconColor);
-  d.drawLine(cx, cy + 1, hrX, hrY + 1, iconColor);
-  d.fillCircle(cx, cy, S(2), iconColor);
+  // Hands with a small filled hub, drawn as anti-aliased wide lines.
+  d.drawWideLine(cx, cy, cx, cy - S(8), 1.6f, iconColor, bg);
+  d.drawWideLine(cx, cy, cx + S(6), cy + S(2), 1.6f, iconColor, bg);
+  uiFillCircle(d, cx, cy, S(2), iconColor);
 }
 
 // =========================================================
@@ -1297,33 +1330,33 @@ void drawClockIcon(T& d, int cx, int cy, uint16_t iconColor, float scale = 1.0f)
 // smaller. Templated on the drawing target like the weather/clock icons.
 
 template<typename T>
-void drawNavBulbIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f) {
+void drawNavBulbIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f, uint16_t bg = COL_BG) {
   auto S = [scale](int v) { return (int)roundf(v * scale); };
   int r = S(8);
-  d.drawCircle(cx, cy - S(2), r, c); // glass
+  d.drawSmoothCircle(cx, cy - S(2), r, c, bg); // glass
   // screw base - a few narrowing rungs under the glass
   d.drawFastHLine(cx - S(4), cy + S(6), S(8), c);
   d.drawFastHLine(cx - S(4), cy + S(8), S(8), c);
   d.drawFastHLine(cx - S(3), cy + S(10), S(6), c);
-  d.drawLine(cx - S(5), cy + S(4), cx - S(4), cy + S(6), c);
-  d.drawLine(cx + S(5), cy + S(4), cx + S(4), cy + S(6), c);
+  d.drawWideLine(cx - S(5), cy + S(4), cx - S(4), cy + S(6), 1.3f, c, bg);
+  d.drawWideLine(cx + S(5), cy + S(4), cx + S(4), cy + S(6), 1.3f, c, bg);
 }
 
 template<typename T>
-void drawCloudIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f) {
+void drawCloudIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f, uint16_t bg = COL_BG) {
   auto S = [scale](int v) { return (int)roundf(v * scale); };
-  d.drawCircle(cx - S(5), cy + S(1), S(5), c);
-  d.drawCircle(cx + S(4), cy + S(1), S(6), c);
-  d.drawCircle(cx, cy - S(3), S(5), c);
+  d.drawSmoothCircle(cx - S(5), cy + S(1), S(5), c, bg);
+  d.drawSmoothCircle(cx + S(4), cy + S(1), S(6), c, bg);
+  d.drawSmoothCircle(cx, cy - S(3), S(5), c, bg);
   d.drawFastHLine(cx - S(9), cy + S(6), S(19), c); // flat base ties the puffs together
 }
 
 template<typename T>
-void drawGearIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f) {
+void drawGearIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f, uint16_t bg = COL_BG) {
   auto S = [scale](int v) { return (int)roundf(v * scale); };
   int r = S(6);
-  d.drawCircle(cx, cy, r, c);       // body
-  d.drawCircle(cx, cy, S(2), c);    // hub hole
+  d.drawSmoothCircle(cx, cy, r, c, bg);       // body
+  d.drawSmoothCircle(cx, cy, S(2), c, bg);    // hub hole
   // 8 teeth as short thick spokes, using fixed unit vectors (no trig)
   static const float dirs[8][2] = {
     {1, 0}, {-1, 0}, {0, 1}, {0, -1},
@@ -1335,19 +1368,18 @@ void drawGearIcon(T& d, int cx, int cy, uint16_t c, float scale = 1.0f) {
     int y1 = cy + (int)roundf(dirs[i][1] * r);
     int x2 = cx + (int)roundf(dirs[i][0] * (r + tooth));
     int y2 = cy + (int)roundf(dirs[i][1] * (r + tooth));
-    d.drawLine(x1, y1, x2, y2, c);
-    d.drawLine(x1 + 1, y1, x2 + 1, y2, c);
+    d.drawWideLine(x1, y1, x2, y2, 1.8f, c, bg);
   }
 }
 
 // Dispatches on PageConfig::type. "home" and user-added "area" pages get
 // the bulb; unknown types fall back to the bulb too.
 template<typename T>
-void drawPageTypeIcon(T& d, const char* type, int cx, int cy, uint16_t c, float scale = 1.0f) {
-  if (strcmp(type, "forecast") == 0)     drawCloudIcon(d, cx, cy, c, scale);
-  else if (strcmp(type, "timers") == 0)  drawClockIcon(d, cx, cy, c, scale);
-  else if (strcmp(type, "status") == 0)  drawGearIcon(d, cx, cy, c, scale);
-  else                                   drawNavBulbIcon(d, cx, cy, c, scale);
+void drawPageTypeIcon(T& d, const char* type, int cx, int cy, uint16_t c, float scale = 1.0f, uint16_t bg = COL_BG) {
+  if (strcmp(type, "forecast") == 0)     drawCloudIcon(d, cx, cy, c, scale, bg);
+  else if (strcmp(type, "timers") == 0)  drawClockIcon(d, cx, cy, c, scale, bg);
+  else if (strcmp(type, "status") == 0)  drawGearIcon(d, cx, cy, c, scale, bg);
+  else                                   drawNavBulbIcon(d, cx, cy, c, scale, bg);
 }
 
 // =========================================================
@@ -1758,57 +1790,6 @@ static uint16_t scaleColor565(uint16_t color, int pct) {
   return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
-void drawBulbIcon(TFT_eSprite& spr, int cx, int cy, bool on, int brightnessPct, uint16_t onColor) {
-  uint16_t glassColor = on ? scaleColor565(onColor, brightnessPct) : COL_PANEL_ALT;
-  uint16_t strokeColor = on ? onColor : COL_STROKE;
-  uint16_t baseColor = on ? COL_DIM : COL_STROKE;
-  int gcy = cy - 3; // glass center, shifted up slightly to leave room for the base below
-
-  // Glow rays, drawn behind the glass so the glass's outline reads clean
-  // on top - a fuller spread (7 directions, skipping straight-down since
-  // light doesn't glow through its own base) rather than 4 short stubs.
-  if (on) {
-    spr.drawLine(cx, gcy - 16, cx, gcy - 13, onColor);           // N
-    spr.drawLine(cx - 16, gcy, cx - 13, gcy, onColor);           // W
-    spr.drawLine(cx + 13, gcy, cx + 16, gcy, onColor);           // E
-    spr.drawLine(cx - 13, gcy - 13, cx - 10, gcy - 10, onColor); // NW
-    spr.drawLine(cx + 13, gcy - 13, cx + 10, gcy - 10, onColor); // NE
-    spr.drawLine(cx - 13, gcy + 9, cx - 10, gcy + 7, onColor);   // SW, shallow
-    spr.drawLine(cx + 13, gcy + 9, cx + 10, gcy + 7, onColor);   // SE, shallow
-  }
-
-  // Glass (bulb head) - drawn with a two-circle outline for visible
-  // weight rather than TFT_eSPI's thin single-pixel drawCircle.
-  spr.fillCircle(cx, gcy, 11, glassColor);
-  spr.drawCircle(cx, gcy, 11, strokeColor);
-  spr.drawCircle(cx, gcy, 10, strokeColor);
-
-  // A soft filament hint when lit - a small V inside the glass, like the
-  // classic light-bulb silhouette rather than a blank circle.
-  if (on) {
-    spr.drawLine(cx - 4, gcy - 3, cx, gcy + 3, strokeColor);
-    spr.drawLine(cx, gcy + 3, cx + 4, gcy - 3, strokeColor);
-  }
-
-  // Tapered neck into a short screw-thread base
-  spr.fillRoundRect(cx - 5, gcy + 8, 10, 4, 2, baseColor);
-  spr.drawFastHLine(cx - 5, gcy + 12, 10, baseColor);
-  spr.drawFastHLine(cx - 4, gcy + 14, 8, baseColor);
-}
-
-void drawSwitchIcon(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t onColor) {
-  uint16_t trackColor = on ? onColor : COL_PANEL_ALT;
-  spr.fillRoundRect(cx - 16, cy - 9, 32, 18, 9, trackColor);
-  spr.drawRoundRect(cx - 16, cy - 9, 32, 18, 9, on ? onColor : COL_STROKE);
-  spr.drawRoundRect(cx - 15, cy - 8, 30, 16, 8, on ? onColor : COL_STROKE); // thickened outline
-  int knobX = on ? (cx + 7) : (cx - 7);
-  // Real iOS switches always use a white knob regardless of on/off or
-  // theme - using the theme background color here (as before) would
-  // make the knob a dark cutout in dark mode, which reads backwards.
-  spr.fillCircle(knobX, cy, 7, fixColor565(TFT_WHITE));
-  spr.drawCircle(knobX, cy, 7, COL_STROKE);
-}
-
 // Stateless "activate" tiles (scene / script / button): a filled play
 // triangle, tinted with the accent while the post-tap flash is showing.
 void drawActionIcon(TFT_eSprite& spr, int cx, int cy, uint16_t color) {
@@ -1820,28 +1801,29 @@ void drawActionIcon(TFT_eSprite& spr, int cx, int cy, uint16_t color) {
 // the type now sits small in a corner and the value carries the tile.
 // Compact ~16px corner icons. gMono -> outline-only 1px (state reads from
 // the accent colour); otherwise filled when "on".
-void drawMiniBulb(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t color) {
+void drawMiniBulb(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t color, uint16_t bg = COL_BG) {
   uint16_t c = on ? color : COL_DIM;
-  if (on && !gMono) spr.fillCircle(cx, cy - 2, 6, scaleColor565(color, 50));
-  spr.drawCircle(cx, cy - 2, 6, c);
+  if (on && !gMono) spr.fillSmoothCircle(cx, cy - 2, 6, scaleColor565(color, 50), bg);
+  spr.drawSmoothCircle(cx, cy - 2, 6, c, on && !gMono ? scaleColor565(color, 50) : bg);
   spr.drawFastHLine(cx - 4, cy + 5, 8, c);
   spr.drawFastHLine(cx - 3, cy + 7, 6, c);
 }
-void drawMiniSwitch(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t color) {
+void drawMiniSwitch(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t color, uint16_t bg = COL_BG) {
   uint16_t c = on ? color : COL_DIM;
   if (gMono) {
     spr.drawRect(cx - 11, cy - 6, 22, 12, c);
     spr.drawRect(on ? cx + 1 : cx - 11, cy - 6, 10, 12, c);
   } else {
-    spr.drawRoundRect(cx - 11, cy - 6, 22, 12, 6, c);
-    if (on) spr.fillRoundRect(cx - 10, cy - 5, 20, 10, 5, scaleColor565(color, 40));
-    spr.fillCircle(on ? cx + 5 : cx - 5, cy, 3, on ? fixColor565(TFT_WHITE) : COL_DIM);
+    uint16_t track = on ? scaleColor565(color, 40) : bg;
+    if (on) uiFillRR(spr, cx - 11, cy - 6, 22, 12, 6, track, bg);
+    uiStrokeRR(spr, cx - 11, cy - 6, 22, 12, 6, c, on ? track : bg);
+    spr.fillSmoothCircle(on ? cx + 5 : cx - 5, cy, 3, on ? fixColor565(TFT_WHITE) : COL_DIM, track);
   }
 }
-void drawMiniSensor(TFT_eSprite& spr, int cx, int cy, uint16_t color) {
-  spr.drawCircle(cx, cy, 6, COL_DIM);
-  spr.drawLine(cx, cy, cx + 3, cy - 3, COL_DIM);
-  spr.fillCircle(cx, cy, 1, COL_DIM);
+void drawMiniSensor(TFT_eSprite& spr, int cx, int cy, uint16_t color, uint16_t bg = COL_BG) {
+  spr.drawSmoothCircle(cx, cy, 6, COL_DIM, bg);
+  spr.drawWideLine(cx, cy, cx + 3, cy - 3, 1.3f, COL_DIM, bg);
+  spr.fillSmoothCircle(cx, cy, 1, COL_DIM, bg);
 }
 
 // Tile label helper: dim, top-left, hard-cut; hairline rule under it in the
@@ -1867,7 +1849,7 @@ void makeSpriteCard(TFT_eSprite& spr, int w, int h, int fillColorOverride = -1) 
   spr.fillSprite(COL_BG);
   // Anti-aliased corners (theme B) - blends the curve against the page bg.
   spr.fillSmoothRoundRect(0, 0, w, h, gCardRadius, fillColor, COL_BG);
-  if (showTileBorder) spr.drawRoundRect(0, 0, w, h, gCardRadius, COL_STROKE);
+  if (showTileBorder) uiStrokeRR(spr, 0, 0, w, h, gCardRadius, COL_STROKE, fillColor);
 }
 
 void pushSpriteAndDelete(TFT_eSprite& spr, int x, int y) {
@@ -1898,7 +1880,7 @@ void drawTimerTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, boo
   const int pad = 12;
 
   drawTileLabel(sprTile, "Timer", pad, w, w - pad - 26, COL_PANEL);
-  drawClockIcon(sprTile, w - 22, h - 18, timerRunning ? COL_ACCENT : COL_DIM, 0.72f);
+  drawClockIcon(sprTile, w - 22, h - 18, timerRunning ? COL_ACCENT : COL_DIM, 0.72f, COL_PANEL);
 
   sprTile.setTextColor(timerRunning ? COL_ACCENT : COL_TEXT, COL_PANEL);
   uiDrawFitted(sprTile, timeText, pad, h - 34, w - pad - 24, 4);
@@ -1931,7 +1913,7 @@ void drawWeatherTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, b
   uiDrawFitted(sprTile, tempText, pad, ty, w - pad * 2 - 12, 4);
   if (weatherKnown) {
     int nw = uiTextWidth(sprTile, tempText, 4);
-    sprTile.drawCircle(pad + nw + 6, ty + 5, 3, COL_TEXT); // degree mark (FreeSans has no U+00B0)
+    sprTile.drawSmoothCircle(pad + nw + 6, ty + 5, 3, COL_TEXT, COL_PANEL); // degree mark (FreeSans has no U+00B0)
   }
   sprTile.setTextDatum(TL_DATUM);
 
@@ -1939,14 +1921,14 @@ void drawWeatherTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, b
 }
 
 // Small sun-over-horizon glyph with a direction arrow. cy is the horizon.
-void drawSunHorizonIcon(TFT_eSprite& spr, int cx, int cy, bool rising, uint16_t lineColor) {
+void drawSunHorizonIcon(TFT_eSprite& spr, int cx, int cy, bool rising, uint16_t lineColor, uint16_t bg = COL_BG) {
   uint16_t sun = fixColor565(0xFDE0);
   int r = 5;
   int scy = cy - 4;
-  spr.fillCircle(cx, scy, r, sun);
+  spr.fillSmoothCircle(cx, scy, r, sun, bg);
   spr.drawFastVLine(cx, scy - r - 3, 2, sun);
-  spr.drawLine(cx - 6, scy - 6, cx - 4, scy - 4, sun);
-  spr.drawLine(cx + 6, scy - 6, cx + 4, scy - 4, sun);
+  spr.drawWideLine(cx - 6, scy - 6, cx - 4, scy - 4, 1.3f, sun, bg);
+  spr.drawWideLine(cx + 6, scy - 6, cx + 4, scy - 4, 1.3f, sun, bg);
   spr.drawFastHLine(cx - 13, cy + 5, 26, lineColor);
   int ax = cx - 14, ay = scy;
   if (rising) spr.fillTriangle(ax - 3, ay + 3, ax + 3, ay + 3, ax, ay - 3, lineColor);
@@ -1973,8 +1955,8 @@ void drawSunTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool 
     sprTile.setTextColor(COL_DIM, COL_PANEL);
     uiDrawString(sprTile, "Sunrise", c1, 9, 1);
     uiDrawString(sprTile, "Sunset",  c2, 9, 1);
-    drawSunHorizonIcon(sprTile, c1, h / 2 + 2, true,  COL_DIM);
-    drawSunHorizonIcon(sprTile, c2, h / 2 + 2, false, COL_DIM);
+    drawSunHorizonIcon(sprTile, c1, h / 2 + 2, true,  COL_DIM, COL_PANEL);
+    drawSunHorizonIcon(sprTile, c2, h / 2 + 2, false, COL_DIM, COL_PANEL);
     sprTile.setTextColor(COL_TEXT, COL_PANEL);
     uiDrawFitted(sprTile, riseT, c1, h - 24, w / 2 - 20, fontTile());
     uiDrawFitted(sprTile, setT,  c2, h - 24, w / 2 - 20, fontTile());
@@ -1982,7 +1964,7 @@ void drawSunTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool 
     bool rise = (mode == 0);
     const int pad = 12;
     drawTileLabel(sprTile, rise ? String("Sunrise") : String("Sunset"), pad, w, w - pad - 24, COL_PANEL);
-    drawSunHorizonIcon(sprTile, w - 21, h - 18, rise, COL_DIM);
+    drawSunHorizonIcon(sprTile, w - 21, h - 18, rise, COL_DIM, COL_PANEL);
     sprTile.setTextColor(COL_TEXT, COL_PANEL);
     uiDrawFitted(sprTile, rise ? riseT : setT, pad, h - 27, w - pad * 2, 2);
   }
@@ -2075,7 +2057,7 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   bool useLitBg = isLight && rt.on;
   uint16_t bgColor = useLitBg ? COL_PANEL_LIT : COL_PANEL;
   makeSpriteCard(sprTile, w, h, useLitBg ? (int)COL_PANEL_LIT : -1);
-  if (useLitBg) sprTile.drawRoundRect(0, 0, w, h, gCardRadius, COL_ACCENT); // accent rim when on
+  if (useLitBg) uiStrokeRR(sprTile, 0, 0, w, h, gCardRadius, COL_ACCENT, bgColor); // accent rim when on
 
   const int pad = 12;
   bool activeState = ((isLight || isSwitch) && rt.on);
@@ -2095,9 +2077,9 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   // --- Type icon: bottom-right, out of the label's way ---
   int mIconX = w - 19;
   int mIconY = h - 19;
-  if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on, COL_ACCENT);
-  else if (isSwitch) drawMiniSwitch(sprTile, mIconX, mIconY, rt.on, COL_ACCENT);
-  else               drawMiniSensor(sprTile, mIconX, mIconY, COL_DIM);
+  if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on, COL_ACCENT, bgColor);
+  else if (isSwitch) drawMiniSwitch(sprTile, mIconX, mIconY, rt.on, COL_ACCENT, bgColor);
+  else               drawMiniSensor(sprTile, mIconX, mIconY, COL_DIM, bgColor);
 
   pushSpriteAndDelete(sprTile, x, y);
 }
@@ -2130,11 +2112,11 @@ void drawSliderSprite(int tileIdx, int slot, bool wide, int percent, bool force)
   const int trackY = 18;
   const int trackH = h - trackY - 8;
 
-  sprTile.drawRoundRect(trackX, trackY, trackW, trackH, 6, COL_STROKE);
+  uiStrokeRR(sprTile, trackX, trackY, trackW, trackH, 6, COL_STROKE, COL_PANEL);
   int innerH = trackH - 4;
   int fillH = (innerH * percent) / 100;
   if (fillH > 0) {
-    sprTile.fillRoundRect(trackX + 2, trackY + trackH - 2 - fillH, trackW - 4, fillH, 4, COL_ACCENT);
+    uiFillRR(sprTile, trackX + 2, trackY + trackH - 2 - fillH, trackW - 4, fillH, 4, COL_ACCENT, COL_PANEL);
   }
   int handleY = trackY + trackH - 2 - fillH;
   sprTile.drawFastHLine(trackX - 3, handleY, trackW + 6, COL_TEXT);
@@ -2251,7 +2233,7 @@ void drawGridBackground() {
     getSlotRect(slotOf[i], wide, x, y, w, h);
     if (shadow) tft.fillSmoothRoundRect(x + 2, y + 3, w, h, gCardRadius, shadowCol, COL_BG);
     tft.fillSmoothRoundRect(x, y, w, h, gCardRadius, COL_PANEL, COL_BG);
-    if (showTileBorder) tft.drawRoundRect(x, y, w, h, gCardRadius, COL_STROKE);
+    if (showTileBorder) uiStrokeRR(tft, x, y, w, h, gCardRadius, COL_STROKE, COL_PANEL);
   }
 }
 
@@ -2272,8 +2254,8 @@ const int STATUS_ROW2_BTN_Y = STATUS_ROW1_BTN_Y + STATUS_BTN_H + 12;  // 226  (R
 void drawStatusButton(int bx, int by, int bw, const String& label, bool danger) {
   uint16_t fill = danger ? fixColor565(0xF36D) : COL_PANEL;
   uint16_t txt  = danger ? fixColor565(0xFFFF) : COL_TEXT;
-  tft.fillRoundRect(bx, by, bw, STATUS_BTN_H, gCardRadius, fill);
-  if (showTileBorder) tft.drawRoundRect(bx, by, bw, STATUS_BTN_H, gCardRadius, COL_STROKE);
+  uiFillRR(tft, bx, by, bw, STATUS_BTN_H, gCardRadius, fill);
+  if (showTileBorder) uiStrokeRR(tft, bx, by, bw, STATUS_BTN_H, gCardRadius, COL_STROKE, fill);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(txt, fill);
   uiDrawFitted(tft, label, bx + bw / 2, by + STATUS_BTN_H / 2, bw - 14, 2, false);
@@ -2348,7 +2330,7 @@ void drawForecastPageFull() {
   tft.setTextColor(COL_TEXT, COL_BG);
   int curTempW = tft.textWidth(curTemp, 4);
   uiDrawString(tft, curTemp, SCREEN_W - 8, heroTop + 10, 4);
-  tft.drawCircle(SCREEN_W - 8 - curTempW - 6, heroTop + 14, 2, COL_TEXT);
+  tft.drawSmoothCircle(SCREEN_W - 8 - curTempW - 6, heroTop + 14, 2, COL_TEXT, COL_BG);
 
   String hiLo = String((int)roundf(forecast[0].tempMax)) + "/" + String((int)roundf(forecast[0].tempMin));
   tft.setTextColor(COL_DIM, COL_BG);
@@ -2377,13 +2359,13 @@ void drawForecastPageFull() {
     String hi = String((int)roundf(forecast[i].tempMax));
     int hiW = tft.textWidth(hi, rf);
     uiDrawString(tft, hi, cx, bodyTop + 82, rf);
-    tft.drawCircle(cx + hiW / 2 + 4, bodyTop + 76, 2, COL_TEXT);
+    tft.drawSmoothCircle(cx + hiW / 2 + 4, bodyTop + 76, 2, COL_TEXT, COL_BG);
 
     tft.setTextColor(COL_DIM, COL_BG);
     String lo = String((int)roundf(forecast[i].tempMin));
     int loW = tft.textWidth(lo, rf);
     uiDrawString(tft, lo, cx, bodyTop + 106, rf);
-    tft.drawCircle(cx + loW / 2 + 4, bodyTop + 100, 2, COL_DIM);
+    tft.drawSmoothCircle(cx + loW / 2 + 4, bodyTop + 100, 2, COL_DIM, COL_BG);
   }
 
   tft.setTextDatum(TL_DATUM);
@@ -2421,8 +2403,8 @@ void drawTimersPageFull() {
     tft.setTextColor(COL_TEXT, COL_BG);
     uiDrawString(tft, buf, SCREEN_W / 2, HEADER_H + 90, 4);
 
-    tft.fillRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, gCardRadius, COL_PANEL);
-    if (showTileBorder) tft.drawRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, gCardRadius, COL_STROKE);
+    uiFillRR(tft, TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, gCardRadius, COL_PANEL);
+    if (showTileBorder) uiStrokeRR(tft, TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, gCardRadius, COL_STROKE, COL_PANEL);
     tft.setTextColor(COL_TEXT, COL_PANEL);
     uiDrawString(tft, "Cancel", TIMER_CANCEL_BTN_X + TIMER_CANCEL_BTN_W / 2, TIMER_CANCEL_BTN_Y + TIMER_CANCEL_BTN_H / 2, 2);
     tft.setTextDatum(TL_DATUM);
@@ -2435,8 +2417,8 @@ void drawTimersPageFull() {
   for (int i = 0; i < 5; i++) {
     int x, y, w, h;
     getSlotRect(i, false, x, y, w, h);
-    tft.fillRoundRect(x, y, w, h, gCardRadius, COL_PANEL);
-    if (showTileBorder) tft.drawRoundRect(x, y, w, h, gCardRadius, COL_STROKE);
+    uiFillRR(tft, x, y, w, h, gCardRadius, COL_PANEL);
+    if (showTileBorder) uiStrokeRR(tft, x, y, w, h, gCardRadius, COL_STROKE, COL_PANEL);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(COL_TEXT, COL_PANEL);
     String label = formatPresetLabel(cfg.timerPresetSec[i]);
@@ -2445,8 +2427,8 @@ void drawTimersPageFull() {
 
   int cx, cy, cw, ch;
   getSlotRect(5, false, cx, cy, cw, ch);
-  tft.fillRoundRect(cx, cy, cw, ch, gCardRadius, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(cx, cy, cw, ch, gCardRadius, COL_STROKE);
+  uiFillRR(tft, cx, cy, cw, ch, gCardRadius, COL_PANEL);
+  if (showTileBorder) uiStrokeRR(tft, cx, cy, cw, ch, gCardRadius, COL_STROKE, COL_PANEL);
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_DIM, COL_PANEL);
   uiDrawString(tft, "Flash Lights", cx + cw / 2, cy + 6, 1);
@@ -2454,9 +2436,9 @@ void drawTimersPageFull() {
   int boxSize = 24;
   int boxX = cx + cw / 2 - boxSize / 2;
   int boxY = cy + ch / 2 - boxSize / 2 + 6;
-  tft.drawRoundRect(boxX, boxY, boxSize, boxSize, 4, COL_STROKE);
+  uiStrokeRR(tft, boxX, boxY, boxSize, boxSize, 4, COL_STROKE, COL_PANEL);
   if (timerFlashOnExpire) {
-    tft.fillRoundRect(boxX + 4, boxY + 4, boxSize - 8, boxSize - 8, 2, COL_ACCENT);
+    uiFillRR(tft, boxX + 4, boxY + 4, boxSize - 8, boxSize - 8, 2, COL_ACCENT, COL_PANEL);
   }
   tft.setTextDatum(TL_DATUM);
 }
@@ -2719,20 +2701,20 @@ const int DIALOG_STOP_X = DIALOG_X + 10;
 const int DIALOG_RESTART_X = DIALOG_X + DIALOG_W - DIALOG_BTN_W - 10;
 
 void drawTimerExpiredDialog() {
-  tft.fillRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, gCardRadius, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, gCardRadius, COL_STROKE);
+  uiFillRR(tft, DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, gCardRadius, COL_PANEL);
+  if (showTileBorder) uiStrokeRR(tft, DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, gCardRadius, COL_STROKE, COL_PANEL);
 
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(COL_TEXT, COL_PANEL);
   uiDrawString(tft, "Timer Expired", DIALOG_X + DIALOG_W / 2, DIALOG_Y + 26, 2);
 
-  tft.fillRoundRect(DIALOG_STOP_X, DIALOG_BTN_Y, DIALOG_BTN_W, DIALOG_BTN_H, 8, COL_PANEL_ALT);
-  tft.drawRoundRect(DIALOG_STOP_X, DIALOG_BTN_Y, DIALOG_BTN_W, DIALOG_BTN_H, 8, COL_STROKE);
+  uiFillRR(tft, DIALOG_STOP_X, DIALOG_BTN_Y, DIALOG_BTN_W, DIALOG_BTN_H, 8, COL_PANEL_ALT, COL_PANEL);
+  uiStrokeRR(tft, DIALOG_STOP_X, DIALOG_BTN_Y, DIALOG_BTN_W, DIALOG_BTN_H, 8, COL_STROKE, COL_PANEL_ALT);
   tft.setTextColor(COL_TEXT, COL_PANEL_ALT);
   uiDrawString(tft, "Stop", DIALOG_STOP_X + DIALOG_BTN_W / 2, DIALOG_BTN_Y + DIALOG_BTN_H / 2, 2);
 
-  tft.fillRoundRect(DIALOG_RESTART_X, DIALOG_BTN_Y, DIALOG_BTN_W, DIALOG_BTN_H, 8, COL_ACCENT);
-  tft.drawRoundRect(DIALOG_RESTART_X, DIALOG_BTN_Y, DIALOG_BTN_W, DIALOG_BTN_H, 8, COL_ACCENT);
+  uiFillRR(tft, DIALOG_RESTART_X, DIALOG_BTN_Y, DIALOG_BTN_W, DIALOG_BTN_H, 8, COL_ACCENT, COL_PANEL);
+  uiStrokeRR(tft, DIALOG_RESTART_X, DIALOG_BTN_Y, DIALOG_BTN_W, DIALOG_BTN_H, 8, COL_ACCENT, COL_ACCENT);
   tft.setTextColor(COL_BG, COL_ACCENT);
   uiDrawString(tft, "Restart", DIALOG_RESTART_X + DIALOG_BTN_W / 2, DIALOG_BTN_Y + DIALOG_BTN_H / 2, 2);
 
@@ -3084,8 +3066,9 @@ void handleRoot() {
     gSaveNotice = "";
   }
 
-  // ---- Device / Home Assistant / Weather (one form, three cards) --------
-  h += "<form method='POST' action='/save-device'>";
+  // ---- Device / Home Assistant / Weather (three independent forms, one
+  // shared handler - handleSaveDevice() is all hasArg()-guarded) ---------
+  h += "<form method='POST' action='/save-device' class='dirty-guard'>";
 
   h += "<section class='card'><h2>Device</h2>";
   h += "<label>Device name (also the .local hostname)</label>";
@@ -3126,8 +3109,10 @@ void handleRoot() {
   h += "<option value='square'" + String(!strcmp(cfg.cornerStyle, "square") ? " selected" : "") + ">Square</option>";
   h += "</select>";
   h += "<div class='muted' style='margin-top:6px;'>Dark/light is separate &mdash; toggle it on the panel's Status screen. All fonts are anti-aliased.</div>";
-  h += "</section>";
+  h += "<button class='primary' type='submit'>Save device</button>";
+  h += "</section></form>";
 
+  h += "<form method='POST' action='/save-device' class='dirty-guard'>";
   h += "<section class='card'><h2>Home Assistant</h2>";
   h += "<label>Home Assistant URL</label>";
   h += "<input name='haUrl' value='" + htmlEscape(cfg.haUrl) + "'>";
@@ -3144,8 +3129,10 @@ void handleRoot() {
     h += "<button type='button' onclick='haTest(this)'>Test</button></div>";
     h += "<div class='muted' style='margin-top:4px'>Tests the <em>saved</em> URL and token - Save first if you just changed them. A successful save also imports your time zone and location from HA.</div>";
   }
-  h += "</section>";
+  h += "<button class='primary' type='submit'>Save Home Assistant</button>";
+  h += "</section></form>";
 
+  h += "<form method='POST' action='/save-device' class='dirty-guard'>";
   h += "<section class='card'><h2>Weather</h2>";
   h += "<div class='muted' style='margin-bottom:6px'>Coordinates are imported from Home Assistant on save. Edit any field to override.</div>";
   h += "<label>Location name (shown on the Forecast screen)</label>";
@@ -3154,9 +3141,9 @@ void handleRoot() {
   h += "<div><label>Latitude</label><input name='weatherLat' value='" + String(cfg.weatherLat, 4) + "'></div>";
   h += "<div><label>Longitude</label><input name='weatherLon' value='" + String(cfg.weatherLon, 4) + "'></div>";
   h += "</div>";
-  h += "</section>";
+  h += "<button class='primary' type='submit'>Save weather</button>";
+  h += "</section></form>";
 
-  h += "<button class='primary' type='submit'>Save device, Home Assistant &amp; weather</button></form>";
   h += "<script>function haTest(b){var s=document.getElementById('haStat');b.disabled=true;s.textContent='Testing...';s.className='pill warn';"
        "fetch('/ha-test').then(r=>r.text()).then(t=>{s.textContent=t;s.className='pill '+(t=='Connected'?'ok':'bad');b.disabled=false;})"
        ".catch(function(){s.textContent='Test failed';s.className='pill bad';b.disabled=false;});}</script>";
@@ -3167,7 +3154,7 @@ void handleRoot() {
     h += "<div class='notice'>The configured static IP didn't connect - the panel is on DHCP for now (current IP: " +
          htmlEscape(WiFi.localIP().toString()) + "). Fix the values below or switch to Automatic.</div>";
   }
-  h += "<form method='POST' action='/save-network'>";
+  h += "<form method='POST' action='/save-network' class='dirty-guard'>";
   h += "<div class='check'><input type='radio' id='nmDhcp' name='netMode' value='dhcp'" + String(cfg.useStaticIp ? "" : " checked") +
        "><label for='nmDhcp' style='margin:0'>Automatic (DHCP)</label></div>";
   h += "<div class='check'><input type='radio' id='nmStatic' name='netMode' value='static'" + String(cfg.useStaticIp ? " checked" : "") +
@@ -3309,11 +3296,11 @@ void handleRoot() {
   h += "<script>(function(){var L=document.getElementById('pageList');"
        "if(L)makeSortable(L,function(o){postOrder('/page/reorder',o);});})();</script>";
   // Warn before leaving with unsaved edits in the long settings forms.
-  h += "<script>(function(){['/save-device','/save-network'].forEach(function(a){"
-       "var f=document.querySelector('form[action=\"'+a+'\"]');if(!f)return;var dirty=false;"
+  h += "<script>(function(){var dirty=false;"
+       "document.querySelectorAll('form.dirty-guard').forEach(function(f){"
        "f.addEventListener('input',function(){dirty=true;});"
-       "f.addEventListener('submit',function(){dirty=false;});"
-       "window.addEventListener('beforeunload',function(e){if(dirty){e.preventDefault();e.returnValue='';}});});})();</script>";
+       "f.addEventListener('submit',function(){dirty=false;});});"
+       "window.addEventListener('beforeunload',function(e){if(dirty){e.preventDefault();e.returnValue='';}});})();</script>";
 
   h += htmlFooter;
   server.send(200, "text/html", h);
@@ -3526,13 +3513,23 @@ void handleSaveDevice() {
   newAreaName.trim();
   if (newAreaName.length() == 0) newAreaName = "Home";
 
+  // The Device / Home Assistant / Weather cards are three separate forms
+  // that all POST here; each only carries its own fields. Guard anything
+  // that isn't hasArg()-safe (bare checkboxes) behind a field unique to
+  // that form so a partial submit can't clear the others' settings.
+  bool deviceForm  = server.hasArg("deviceName");
+  bool haForm      = server.hasArg("haUrl") || server.hasArg("haToken");
+  bool weatherForm = server.hasArg("weatherName") || server.hasArg("weatherLat") || server.hasArg("weatherLon");
+
   strlcpy(cfg.deviceName, newName.c_str(), sizeof(cfg.deviceName));
   strlcpy(cfg.haUrl, newUrl.c_str(), sizeof(cfg.haUrl));
   if (newToken.length() > 0) strlcpy(cfg.haToken, newToken.c_str(), sizeof(cfg.haToken));
   strlcpy(cfg.pages[0].name, newAreaName.c_str(), sizeof(cfg.pages[0].name));
-  cfg.use12Hour = server.hasArg("use12h"); // unchecked checkboxes are simply absent from the POST body
-  cfg.flipScreen = server.hasArg("flipScreen");
-  applyScreenRotation();
+  if (deviceForm) {
+    cfg.use12Hour = server.hasArg("use12h"); // unchecked checkboxes are simply absent from the POST body
+    cfg.flipScreen = server.hasArg("flipScreen");
+    applyScreenRotation();
+  }
   strlcpy(cfg.timezone, sanitizeTimezoneKey(server.hasArg("timezone") ? server.arg("timezone") : String(cfg.timezone)).c_str(), sizeof(cfg.timezone));
   applyTimezone();
   cfg.uiFontSize = (uint8_t)constrain(server.hasArg("uiFontSize") ? server.arg("uiFontSize").toInt() : cfg.uiFontSize, 0, 2);
@@ -3566,16 +3563,19 @@ void handleSaveDevice() {
     if (wn.length() > 0) strlcpy(cfg.weatherLocationName, wn.c_str(), sizeof(cfg.weatherLocationName));
   }
   // Location may have changed - drop the cached forecast so it refetches promptly.
-  weatherKnown = false;
-  lastWeatherFetch = 0;
+  if (weatherForm) {
+    weatherKnown = false;
+    lastWeatherFetch = 0;
+  }
 
   saveConfig();
   pageDirty = true;
 
-  // Probe HA and, when reachable, import time zone + location from it.
+  // Probe HA and, when reachable, import time zone + location from it -
+  // only when the Home Assistant card was the form submitted.
   // Result is surfaced as a one-shot banner on the settings page.
   gSaveNotice = "Settings saved.";
-  if (strlen(cfg.haUrl) > 0 && strlen(cfg.haToken) > 0) {
+  if (haForm && strlen(cfg.haUrl) > 0 && strlen(cfg.haToken) > 0) {
     HaConnState s = haProbeConnection();
     haConnState = s;
     lastHaCheckMs = millis();
