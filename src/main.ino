@@ -205,13 +205,13 @@ bool showTileBorder;
 
 void applyTheme(bool dark) {
   if (dark) {
-    COL_BG        = fixColor565(0x1082); // #121016  warm near-black
-    COL_PANEL     = fixColor565(0x18C4); // #1c1a22
-    COL_PANEL_ALT = fixColor565(0x2105); // #26232e
-    COL_STROKE    = fixColor565(0x3167); // #302d38  hairline
-    COL_TEXT      = fixColor565(0xEF3B); // #ece7dd  warm paper
-    COL_DIM       = fixColor565(0x8C2F); // #8b857e
-    COL_ACCENT    = fixColor565(0xED09); // #e8a24c  incandescent amber
+    COL_BG        = fixColor565(0x18E3); // #1a1c1a  warm near-black
+    COL_PANEL     = fixColor565(0x41EA); // #443c52  lifted panel
+    COL_PANEL_ALT = fixColor565(0x524C); // #524a60
+    COL_STROKE    = fixColor565(0x630E); // #636070  hairline
+    COL_TEXT      = fixColor565(0xFFFE); // #fdfcf5  warm paper
+    COL_DIM       = fixColor565(0xAD33); // #a8a49f
+    COL_ACCENT    = fixColor565(0xFCE5); // #ff9c28  incandescent amber
   } else {
     COL_BG        = fixColor565(0xE71A); // #e7e2d6  warm paper
     COL_PANEL     = fixColor565(0xFFDE); // #fbf8f1
@@ -1805,6 +1805,28 @@ void drawActionIcon(TFT_eSprite& spr, int cx, int cy, uint16_t color) {
   spr.fillTriangle(cx - 6, cy - 8, cx - 6, cy + 8, cx + 8, cy, color);
 }
 
+// Compact ~16px corner icons for the redesigned tile layout: the big
+// centred bulb/switch gave every tile the same "settings row" look, so
+// the type now sits small in a corner and the value carries the tile.
+void drawMiniBulb(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t color) {
+  uint16_t c = on ? color : COL_DIM;
+  if (on) spr.fillCircle(cx, cy - 2, 6, scaleColor565(color, 50));
+  spr.drawCircle(cx, cy - 2, 6, c);
+  spr.drawFastHLine(cx - 4, cy + 5, 8, c);
+  spr.drawFastHLine(cx - 3, cy + 7, 6, c);
+}
+void drawMiniSwitch(TFT_eSprite& spr, int cx, int cy, bool on, uint16_t color) {
+  uint16_t c = on ? color : COL_DIM;
+  spr.drawRoundRect(cx - 11, cy - 6, 22, 12, 6, c);
+  if (on) spr.fillRoundRect(cx - 10, cy - 5, 20, 10, 5, scaleColor565(color, 40));
+  spr.fillCircle(on ? cx + 5 : cx - 5, cy, 3, on ? fixColor565(TFT_WHITE) : COL_DIM);
+}
+void drawMiniSensor(TFT_eSprite& spr, int cx, int cy, uint16_t color) {
+  spr.drawCircle(cx, cy, 6, COL_DIM);
+  spr.drawLine(cx, cy, cx + 3, cy - 3, COL_DIM);
+  spr.fillCircle(cx, cy, 1, COL_DIM);
+}
+
 void makeSpriteCard(TFT_eSprite& spr, int w, int h, int fillColorOverride = -1) {
   uint16_t fillColor = (fillColorOverride >= 0) ? (uint16_t)fillColorOverride : COL_PANEL;
   spr.deleteSprite();
@@ -2028,35 +2050,36 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   if (!force && combined == rt.cacheKey) return;
   rt.cacheKey = combined;
 
-  // Lit-up background for a light that's on, so state is visible even
-  // without reading the text - dark for off, brighter for on.
+  // Lit-up background for a light that's on.
   bool useLitBg = isLight && rt.on;
   uint16_t bgColor = useLitBg ? COL_PANEL_LIT : COL_PANEL;
   makeSpriteCard(sprTile, w, h, useLitBg ? (int)COL_PANEL_LIT : -1);
-  if (useLitBg) {
-    // "On" tile: amber rim instead of the hairline - reads as a glow.
-    sprTile.drawRoundRect(0, 0, w, h, CARD_RADIUS, COL_ACCENT);
-  }
-
-  sprTile.setTextDatum(TC_DATUM);
-  sprTile.setTextColor(COL_DIM, bgColor);
-  uiDrawFitted(sprTile, tl.label, w / 2, 4, w - 12, fontTile());
+  if (useLitBg) sprTile.drawRoundRect(0, 0, w, h, CARD_RADIUS, COL_ACCENT); // amber rim = glow
 
   const uint16_t warmColor = resolveBulbColor();
-  int iconCx = wide ? w / 4 : w / 2;
-  const int iconCy = 38; // nudged down 2px - the bigger bulb glass needs a touch more clearance from the label above
+  const int pad = 9;
 
-  if (isLight) {
-    drawBulbIcon(sprTile, iconCx, iconCy, rt.on, rt.brightnessPct, warmColor);
-  } else if (isSwitch) {
-    drawSwitchIcon(sprTile, iconCx, iconCy, rt.on, COL_ACCENT);
-  } else {
-    sprTile.drawCircle(iconCx, iconCy, 9, COL_DIM);
-  }
+  // --- Label: top-left, small, dim; leaves the top-right corner free ---
+  sprTile.setTextDatum(TL_DATUM);
+  sprTile.setTextColor(COL_DIM, bgColor);
+  uiDrawFitted(sprTile, tl.label, pad, 7, w - pad - 30, 1);
 
-  sprTile.setTextDatum(MC_DATUM);
-  sprTile.setTextColor(rt.on ? COL_TEXT : COL_DIM, bgColor);
-  uiDrawString(sprTile, stateText, w / 2, h - 12, fontTile());
+  // --- Type icon: small, top-right corner ---
+  int mIconX = w - pad - 10;
+  int mIconY = 19;
+  bool activeState = ((isLight || isSwitch) && rt.on);
+  if (isLight)       drawMiniBulb(sprTile, mIconX, mIconY, rt.on, warmColor);
+  else if (isSwitch) drawMiniSwitch(sprTile, mIconX, mIconY, rt.on, COL_ACCENT);
+  else               drawMiniSensor(sprTile, mIconX, mIconY, COL_DIM);
+
+  // --- Value: bottom-left, the tile's focal point ---
+  bool shortVal = (stateText.length() <= 4);
+  int vFont = shortVal ? (cfg.uiFontSize == 0 ? 2 : 4) : 2;
+  uint16_t valColor = activeState ? COL_ACCENT
+                    : (rt.known || isSensor || strlen(tl.entityId) == 0) ? COL_TEXT : COL_DIM;
+  sprTile.setTextColor(valColor, bgColor);
+  int vy = h - (vFont == 4 ? 30 : 24);
+  uiDrawFitted(sprTile, stateText, pad, vy, w - pad * 2, vFont);
   sprTile.setTextDatum(TL_DATUM);
 
   pushSpriteAndDelete(sprTile, x, y);
@@ -4138,6 +4161,8 @@ void setupWebServer() {
 // =========================================================
 void setup() {
   Serial.begin(115200);
+  delay(150);
+  Serial.printf("\n=== HA Panel  build %s %s  theme=Tungsten ===\n", __DATE__, __TIME__);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
   analogWrite(BACKLIGHT_PIN, 255);
