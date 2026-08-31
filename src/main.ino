@@ -3419,7 +3419,6 @@ void handleRoot() {
   h += "<h3>Timer expiry alerts</h3><form method='POST' action='/save-flash'>";
   h += "<div class='check'><input type='checkbox' id='marqueeEnabled' name='marqueeEnabled'" + String(cfg.marqueeEnabled ? " checked" : "") +
        "><label for='marqueeEnabled' style='margin:0'>Flash the red screen border until the timer is dismissed</label></div>";
-  h += "<div class='muted' style='margin:2px 0 10px'>The border no longer shows while a timer is just counting down.</div>";
   h += "<label>Pulse rate (ms between on/off)</label><input name='flashRate' value='" + String(cfg.flashPulseRateMs) + "'>";
   h += "<label>Pulse count (full on/off cycles)</label><input name='flashCount' value='" + String(cfg.flashPulseCount) + "'>";
   h += "<label>Dim-phase brightness (%) - the \"on\" phase is always 100%</label>";
