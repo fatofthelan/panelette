@@ -632,6 +632,7 @@ bool loadConfig() {
   cfg.flipScreen = doc["flipScreen"] | false;
   cfg.uiFontSize = (uint8_t)constrain((int)(doc["uiFontSize"] | 1), 0, 2);
   strlcpy(cfg.uiTypeface, doc["uiTypeface"] | "classic", sizeof(cfg.uiTypeface));
+  strlcpy(cfg.uiTypeface, "smooth", sizeof(cfg.uiTypeface)); // theme-b branch: force the AA font
   cfg.uiBoldText = doc["uiBoldText"] | false;
   strlcpy(cfg.bulbColorKey, doc["bulbColorKey"] | "amber", sizeof(cfg.bulbColorKey));
   strlcpy(cfg.timezone, doc["timezone"] | "us_pacific", sizeof(cfg.timezone));
