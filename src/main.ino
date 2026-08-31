@@ -163,6 +163,7 @@ const int GRID_Y[3]  = {42, 120, 198};
 const int CELL_W     = 108;
 const int CELL_H     = 70;
 const int CELL_GAP   = 8; // gap between the two columns
+const int CARD_RADIUS = 10; // rounded-rect corner for tiles / cards / buttons (theme A)
 
 // =========================================================
 // THEME
@@ -196,32 +197,33 @@ static uint16_t fixColor565(uint16_t c) {
   return (uint16_t)(~c);
 }
 
-// Dark theme keeps a barely-visible hairline border on every card (style
-// "C"); light theme drops the border entirely and relies on flat white-
-// on-gray fill contrast alone (style "D") - both replacing the earlier
-// glowing accent-colored outline on every single element.
+// Theme direction "A - Tungsten": a dark room with a warm lamp in it.
+// Warm-black ground, warm-paper text, one incandescent-amber accent that
+// only appears where something is on. Both themes carry a hairline card
+// border. RGB565 literals below; the trailing comment is the ~8-bit hex.
 bool showTileBorder;
 
 void applyTheme(bool dark) {
   if (dark) {
-    COL_BG = fixColor565(0x0000);         // true black
-    COL_PANEL = fixColor565(0x39C7);      // #383840 - clearly lighter than bg
-    COL_PANEL_ALT = fixColor565(0x4A6A);  // #4C4C52
-    COL_STROKE = fixColor565(0x5ACC);     // #5A5A60 - the hairline border color
-    COL_TEXT = fixColor565(0xFFFF);
-    COL_DIM = fixColor565(0x8C72);        // #8E8E93 (iOS systemGray)
-    COL_ACCENT = fixColor565(0x0C3F);     // #0A84FF (iOS dark-mode blue)
+    COL_BG        = fixColor565(0x1082); // #121016  warm near-black
+    COL_PANEL     = fixColor565(0x18C4); // #1c1a22
+    COL_PANEL_ALT = fixColor565(0x2105); // #26232e
+    COL_STROKE    = fixColor565(0x3167); // #302d38  hairline
+    COL_TEXT      = fixColor565(0xEF3B); // #ece7dd  warm paper
+    COL_DIM       = fixColor565(0x8C2F); // #8b857e
+    COL_ACCENT    = fixColor565(0xED09); // #e8a24c  incandescent amber
   } else {
-    COL_BG = fixColor565(0xE73D);         // #E6E6EC - contrast against white cards
-    COL_PANEL = fixColor565(0xFFFF);      // white cards
-    COL_PANEL_ALT = fixColor565(0xE73C);  // #E5E5EA
-    COL_STROKE = fixColor565(0xC639);     // #C7C7CC
-    COL_TEXT = fixColor565(0x0000);
-    COL_DIM = fixColor565(0x8C72);        // #8E8E93
-    COL_ACCENT = fixColor565(0x03DF);     // #007AFF (iOS light-mode blue)
+    COL_BG        = fixColor565(0xE71A); // #e7e2d6  warm paper
+    COL_PANEL     = fixColor565(0xFFDE); // #fbf8f1
+    COL_PANEL_ALT = fixColor565(0xEF5B); // #efe9db
+    COL_STROKE    = fixColor565(0xD677); // #d6cdba
+    COL_TEXT      = fixColor565(0x2924); // #2a2620  warm near-black
+    COL_DIM       = fixColor565(0x83EE); // #877e70
+    COL_ACCENT    = fixColor565(0xB343); // #b26a18  deeper amber for light
   }
-  showTileBorder = dark;
-  COL_PANEL_LIT = blendColor565(COL_PANEL, COL_ACCENT, 40); // already-corrected inputs, no extra wrap needed
+  showTileBorder = true;
+  // Warm amber wash behind an "on" tile - subtle, tracks the panel colour.
+  COL_PANEL_LIT = blendColor565(COL_PANEL, COL_ACCENT, dark ? 16 : 14);
 }
 
 // =========================================================
@@ -346,11 +348,11 @@ struct UiTypefaceEntry {
   const char* label;
 };
 const UiTypefaceEntry UI_TYPEFACES[] = {
-  {"classic",   "Classic (built-in)"},
-  {"sans",      "Sans"},
+  {"sans",      "Sans (default)"},
   {"sans_bold", "Sans Bold"},
   {"serif",     "Serif"},
   {"mono",      "Mono"},
+  {"classic",   "Classic (old bitmap font)"},
 };
 const int UI_TYPEFACES_COUNT = sizeof(UI_TYPEFACES) / sizeof(UI_TYPEFACES[0]);
 
@@ -477,7 +479,7 @@ void setDefaultConfig() {
   cfg.use12Hour = false;
   cfg.flipScreen = false;
   cfg.uiFontSize = 1;
-  strlcpy(cfg.uiTypeface, "classic", sizeof(cfg.uiTypeface));
+  strlcpy(cfg.uiTypeface, "sans", sizeof(cfg.uiTypeface)); // theme A: GFXFF FreeSans by default
   cfg.uiBoldText = false;
   strlcpy(cfg.bulbColorKey, "amber", sizeof(cfg.bulbColorKey));
   strlcpy(cfg.timezone, "us_pacific", sizeof(cfg.timezone));
@@ -1815,8 +1817,8 @@ void makeSpriteCard(TFT_eSprite& spr, int w, int h, int fillColorOverride = -1) 
   // background first makes those corners blend in instead of showing
   // stale pixel garbage.
   spr.fillSprite(COL_BG);
-  spr.fillRoundRect(0, 0, w, h, 14, fillColor);
-  if (showTileBorder) spr.drawRoundRect(0, 0, w, h, 14, COL_STROKE);
+  spr.fillRoundRect(0, 0, w, h, CARD_RADIUS, fillColor);
+  if (showTileBorder) spr.drawRoundRect(0, 0, w, h, CARD_RADIUS, COL_STROKE);
 }
 
 void pushSpriteAndDelete(TFT_eSprite& spr, int x, int y) {
@@ -2031,6 +2033,10 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   bool useLitBg = isLight && rt.on;
   uint16_t bgColor = useLitBg ? COL_PANEL_LIT : COL_PANEL;
   makeSpriteCard(sprTile, w, h, useLitBg ? (int)COL_PANEL_LIT : -1);
+  if (useLitBg) {
+    // "On" tile: amber rim instead of the hairline - reads as a glow.
+    sprTile.drawRoundRect(0, 0, w, h, CARD_RADIUS, COL_ACCENT);
+  }
 
   sprTile.setTextDatum(TC_DATUM);
   sprTile.setTextColor(COL_DIM, bgColor);
@@ -2197,8 +2203,8 @@ void drawGridBackground() {
     bool wide = (pg.tiles[i].size == 2);
     int x, y, w, h;
     getSlotRect(slotOf[i], wide, x, y, w, h);
-    tft.fillRoundRect(x, y, w, h, 14, COL_PANEL);
-    if (showTileBorder) tft.drawRoundRect(x, y, w, h, 14, COL_STROKE);
+    tft.fillRoundRect(x, y, w, h, CARD_RADIUS, COL_PANEL);
+    if (showTileBorder) tft.drawRoundRect(x, y, w, h, CARD_RADIUS, COL_STROKE);
   }
 }
 
@@ -2264,24 +2270,24 @@ void drawStatusPageFull() {
   int sBtnFont = btnFont > 2 ? 2 : btnFont;
 
   // Theme toggle button
-  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_THEME_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_THEME_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_STROKE);
+  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_THEME_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_PANEL);
+  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_THEME_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_STROKE);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(COL_TEXT, COL_PANEL);
   uiDrawString(tft, cfg.darkTheme ? "Dark Mode: ON" : "Light Mode: ON",
                  STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_THEME_BTN_Y + STATUS_BTN_H / 2, sBtnFont);
 
   // Flip screen toggle button
-  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_FLIP_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_FLIP_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_STROKE);
+  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_FLIP_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_PANEL);
+  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_FLIP_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_STROKE);
   tft.setTextColor(COL_TEXT, COL_PANEL);
   uiDrawString(tft, cfg.flipScreen ? "Screen: Flipped" : "Screen: Normal",
                  STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_FLIP_BTN_Y + STATUS_BTN_H / 2, sBtnFont);
 
   // Reboot button
   uint16_t rbColor = rebootArmed ? fixColor565(TFT_RED) : COL_PANEL;
-  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_REBOOT_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, rbColor);
-  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_REBOOT_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, 14, COL_STROKE);
+  tft.fillRoundRect(STATUS_THEME_BTN_X, STATUS_REBOOT_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, rbColor);
+  if (showTileBorder) tft.drawRoundRect(STATUS_THEME_BTN_X, STATUS_REBOOT_BTN_Y, STATUS_THEME_BTN_W, STATUS_BTN_H, CARD_RADIUS, COL_STROKE);
   tft.setTextColor(rebootArmed ? fixColor565(TFT_WHITE) : COL_TEXT, rbColor);
   uiDrawString(tft, rebootArmed ? "Tap Again" : "Reboot Device",
                  STATUS_THEME_BTN_X + STATUS_THEME_BTN_W / 2, STATUS_REBOOT_BTN_Y + STATUS_BTN_H / 2, sBtnFont);
@@ -2393,8 +2399,8 @@ void drawTimersPageFull() {
     tft.setTextColor(COL_TEXT, COL_BG);
     uiDrawString(tft, buf, SCREEN_W / 2, HEADER_H + 90, 4);
 
-    tft.fillRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, 14, COL_PANEL);
-    if (showTileBorder) tft.drawRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, 14, COL_STROKE);
+    tft.fillRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, CARD_RADIUS, COL_PANEL);
+    if (showTileBorder) tft.drawRoundRect(TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, CARD_RADIUS, COL_STROKE);
     tft.setTextColor(COL_TEXT, COL_PANEL);
     uiDrawString(tft, "Cancel", TIMER_CANCEL_BTN_X + TIMER_CANCEL_BTN_W / 2, TIMER_CANCEL_BTN_Y + TIMER_CANCEL_BTN_H / 2, 2);
     tft.setTextDatum(TL_DATUM);
@@ -2407,8 +2413,8 @@ void drawTimersPageFull() {
   for (int i = 0; i < 5; i++) {
     int x, y, w, h;
     getSlotRect(i, false, x, y, w, h);
-    tft.fillRoundRect(x, y, w, h, 14, COL_PANEL);
-    if (showTileBorder) tft.drawRoundRect(x, y, w, h, 14, COL_STROKE);
+    tft.fillRoundRect(x, y, w, h, CARD_RADIUS, COL_PANEL);
+    if (showTileBorder) tft.drawRoundRect(x, y, w, h, CARD_RADIUS, COL_STROKE);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(COL_TEXT, COL_PANEL);
     String label = formatPresetLabel(cfg.timerPresetSec[i]);
@@ -2417,8 +2423,8 @@ void drawTimersPageFull() {
 
   int cx, cy, cw, ch;
   getSlotRect(5, false, cx, cy, cw, ch);
-  tft.fillRoundRect(cx, cy, cw, ch, 14, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(cx, cy, cw, ch, 14, COL_STROKE);
+  tft.fillRoundRect(cx, cy, cw, ch, CARD_RADIUS, COL_PANEL);
+  if (showTileBorder) tft.drawRoundRect(cx, cy, cw, ch, CARD_RADIUS, COL_STROKE);
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_DIM, COL_PANEL);
   uiDrawString(tft, "Flash Lights", cx + cw / 2, cy + 6, 1);
@@ -2691,8 +2697,8 @@ const int DIALOG_STOP_X = DIALOG_X + 10;
 const int DIALOG_RESTART_X = DIALOG_X + DIALOG_W - DIALOG_BTN_W - 10;
 
 void drawTimerExpiredDialog() {
-  tft.fillRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, 14, COL_PANEL);
-  if (showTileBorder) tft.drawRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, 14, COL_STROKE);
+  tft.fillRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, CARD_RADIUS, COL_PANEL);
+  if (showTileBorder) tft.drawRoundRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, CARD_RADIUS, COL_STROKE);
 
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(COL_TEXT, COL_PANEL);
@@ -3081,7 +3087,7 @@ void handleRoot() {
   h += "<option value='1'" + String(cfg.uiFontSize == 1 ? " selected" : "") + ">Medium</option>";
   h += "<option value='2'" + String(cfg.uiFontSize == 2 ? " selected" : "") + ">Large</option>";
   h += "</select>";
-  h += "<label>Panel typeface (experimental)</label><select name='uiTypeface'>";
+  h += "<label>Panel typeface</label><select name='uiTypeface'>";
   for (int i = 0; i < UI_TYPEFACES_COUNT; i++) {
     h += "<option value='" + String(UI_TYPEFACES[i].key) + "'";
     if (String(cfg.uiTypeface) == UI_TYPEFACES[i].key) h += " selected";
@@ -3090,7 +3096,7 @@ void handleRoot() {
   h += "</select>";
   h += "<div class='check'><input type='checkbox' id='uiBoldText' name='uiBoldText'" + String(cfg.uiBoldText ? " checked" : "") +
        "><label for='uiBoldText' style='margin:0'>Bold / thicker stroke</label></div>";
-  h += "<div class='muted' style='margin-top:6px;'>Classic is the built-in bitmap font, pixel-tuned to fit every screen. The others are real typefaces but text may shift or clip until adjusted.</div>";
+  h += "<div class='muted' style='margin-top:6px;'>Sans is the default. Classic is the old built-in bitmap font (blockier, but guaranteed to fit every layout).</div>";
   h += "</section>";
 
   h += "<section class='card'><h2>Home Assistant</h2>";
