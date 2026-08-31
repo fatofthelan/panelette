@@ -1882,10 +1882,12 @@ void drawTimerTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, boo
   const int pad = 12;
 
   drawTileLabel(sprTile, "Timer", pad, w, w - pad - 26, COL_PANEL);
-  drawClockIcon(sprTile, w - 22, h - 18, timerRunning ? COL_ACCENT : COL_DIM, 0.72f, COL_PANEL);
+  // On a 1x1 the clock icon crowds the mm:ss readout out of the tile -
+  // only the wide layout has room for it.
+  if (wide) drawClockIcon(sprTile, w - 22, h - 18, timerRunning ? COL_ACCENT : COL_DIM, 0.72f, COL_PANEL);
 
   sprTile.setTextColor(timerRunning ? COL_ACCENT : COL_TEXT, COL_PANEL);
-  uiDrawFitted(sprTile, timeText, pad, h - 34, w - pad - 24, 4);
+  uiDrawFitted(sprTile, timeText, pad, h - 34, wide ? (w - pad - 24) : (w - pad * 2), 4);
   sprTile.setTextDatum(TL_DATUM);
 
   pushSpriteAndDelete(sprTile, x, y);
@@ -2019,16 +2021,20 @@ void drawDateTileSprite(int tileIdx, int x, int y, int w, int h, bool wide, bool
 
   drawTileLabel(sprTile, "Date", pad, w, w - pad - 26, COL_PANEL);
 
-  if (mode == 1) {
-    drawCalendarIcon(sprTile, w - 21, h - 18, COL_DIM, COL_PANEL);
+  if (mode == 1 && wide) {
+    // Weekday-focused: only the wide layout has room for the day name plus
+    // the calendar glyph without anything running into the border.
+    drawCalendarIcon(sprTile, w - 22, h - 18, COL_DIM, COL_PANEL);
     sprTile.setTextColor(COL_TEXT, COL_PANEL);
-    uiDrawFitted(sprTile, dayStr, pad, h - 42, w - pad * 2 - 18, 4);
+    uiDrawFitted(sprTile, dayStr, pad, h - 42, w - pad * 2 - 20, 4);
     sprTile.setTextColor(COL_DIM, COL_PANEL);
     uiDrawFitted(sprTile, dateStr, pad, h - 18, w - pad * 2, 2);
   } else {
-    drawCalendarIcon(sprTile, w - 19, h - 18, COL_DIM, COL_PANEL);
+    // Compact numeric, centred and full-width - the string is too wide to
+    // sit beside an icon in a 1x1 cell, so there's no icon here.
+    sprTile.setTextDatum(TC_DATUM);
     sprTile.setTextColor(COL_TEXT, COL_PANEL);
-    uiDrawFitted(sprTile, dateStr, pad, h - 27, w - pad - 22, 2);
+    uiDrawFitted(sprTile, dateStr, w / 2, h - 32, w - 12, 2);
   }
 
   sprTile.setTextDatum(TL_DATUM);
@@ -2494,20 +2500,24 @@ void drawTimersPageFull() {
   uiFillRR(tft, cx, cy, cw, ch, gCardRadius, COL_PANEL);
   if (showTileBorder) uiStrokeRR(tft, cx, cy, cw, ch, gCardRadius, COL_STROKE, COL_PANEL);
   // "Flash Lights" on one line overruns the tile in the wider mono
-  // typeface - stack it as two words instead.
+  // typeface - stack it as two comfortably-spaced words with an iOS-style
+  // toggle below instead of a cramped centred checkbox.
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_DIM, COL_PANEL);
-  uiDrawFitted(tft, "Flash", cx + cw / 2, cy + 3, cw - 8, 1, false);
-  uiDrawFitted(tft, "Lights", cx + cw / 2, cy + 15, cw - 8, 1, false);
-
-  int boxSize = 24;
-  int boxX = cx + cw / 2 - boxSize / 2;
-  int boxY = cy + ch / 2 - boxSize / 2 + 8;
-  uiStrokeRR(tft, boxX, boxY, boxSize, boxSize, 4, COL_STROKE, COL_PANEL);
-  if (timerFlashOnExpire) {
-    uiFillRR(tft, boxX + 4, boxY + 4, boxSize - 8, boxSize - 8, 2, COL_ACCENT, COL_PANEL);
-  }
+  uiDrawFitted(tft, "Flash", cx + cw / 2, cy + 2, cw - 8, 1, false);
+  uiDrawFitted(tft, "Lights", cx + cw / 2, cy + 22, cw - 8, 1, false);
   tft.setTextDatum(TL_DATUM);
+
+  const int pw = 46, ph = 20;
+  int px = cx + cw / 2 - pw / 2;
+  int py = cy + ch - ph - 8;
+  bool on = timerFlashOnExpire;
+  uint16_t track = on ? COL_ACCENT : COL_PANEL_ALT;
+  uiFillRR(tft, px, py, pw, ph, ph / 2, track, COL_PANEL);
+  uiStrokeRR(tft, px, py, pw, ph, ph / 2, on ? COL_ACCENT : COL_STROKE, track);
+  int kr = ph / 2 - 3;
+  int kx = on ? (px + pw - ph / 2) : (px + ph / 2);
+  uiFillCircle(tft, kx, py + ph / 2, kr, fixColor565(TFT_WHITE));
 }
 
 void updateGridTiles(bool force) {
