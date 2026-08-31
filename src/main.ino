@@ -1862,53 +1862,84 @@ uint32_t haWsEntitySignature() {
   return h ^ (uint32_t)n;
 }
 
+bool haWsRawLog = true; // dump raw frames to Serial while we're bringing this up
+
 void haWsSendSubscribe() {
   String ents[MAX_PAGES * MAX_TILES];
   int n = haWsCollectEntities(ents, MAX_PAGES * MAX_TILES);
   haWsEntitySig = haWsEntitySignature();
   if (n == 0) return;
 
-  String msg = "{\"id\":" + String(haWsSubId++) +
-               ",\"type\":\"subscribe_trigger\",\"trigger\":{\"platform\":\"state\",\"entity_id\":[";
+  // subscribe_entities (HA 2022.4+): sends the full initial state right away
+  // AND every subsequent change - including transitions to "unavailable",
+  // which subscribe_trigger's state platform does not reliably deliver.
+  String msg = "{\"id\":" + String(haWsSubId++) + ",\"type\":\"subscribe_entities\",\"entity_ids\":[";
   for (int i = 0; i < n; i++) { if (i) msg += ","; msg += "\"" + ents[i] + "\""; }
-  msg += "]}}";
+  msg += "]}";
   haWs.sendTXT(msg);
-  Serial.printf("[haWs] subscribe_trigger: %d entities\n", n);
+  Serial.printf("[haWs] subscribe_entities: %d entities\n", n);
 }
 
-void haWsApplyTrigger(JsonVariantConst trig) {
-  const char* eid = trig["entity_id"];
-  JsonVariantConst toState = trig["to_state"];
-  if (!eid || toState.isNull()) return;
+// One entity's slice of a subscribe_entities event. `full` = from the
+// initial "a" (added) map, a complete state; otherwise it's a "c" (changed)
+// diff with the new/changed bits nested under "+".
+//   full:  {"s":"on","a":{"brightness":128,...},"lc":..,"lu":..,"c":..}
+//   diff:  {"+":{"s":"off","a":{...}}, "-":{...}}
+void haWsApplyEntitySlice(const char* eid, JsonVariantConst slice, bool full) {
+  JsonVariantConst payload = full ? slice : slice["+"];
+  JsonVariantConst s  = payload["s"];               // new state string (may be absent)
+  JsonVariantConst br = payload["a"]["brightness"]; // new brightness (may be absent)
+  if (s.isNull() && br.isNull()) return;
 
   int hits = 0;
   for (int p = 0; p < cfg.pageCount; p++) {
     for (int t = 0; t < cfg.pages[p].tileCount; t++) {
       if (strcmp(cfg.pages[p].tiles[t].entityId, eid) != 0) continue;
-      applyEntityStateJson(toState, tileRuntime[p][t]);
-      tileRuntime[p][t].cacheKey = ""; // redraw next tick / on page open
+      TileRuntime& rt = tileRuntime[p][t];
+      if (!s.isNull()) {
+        rt.lastRawState = String((const char*)s);
+        rt.unavailable = (rt.lastRawState == "unavailable" || rt.lastRawState == "unknown");
+        rt.on = (rt.lastRawState == "on");
+        rt.known = true;
+      }
+      if (!br.isNull()) {
+        int b255 = br.as<int>();
+        rt.brightnessPct = constrain((int)((b255 * 100L + 127L) / 255L), 1, 100);
+      } else if (full && rt.on) {
+        rt.brightnessPct = 100; // "on" with no brightness attribute = non-dimmable
+      }
+      rt.cacheKey = "";
       hits++;
     }
   }
-  haWsEventCount++;
-  Serial.printf("[haWs] %s -> %s (%d tiles)\n", eid, (const char*)(toState["state"] | "?"), hits);
+  if (hits) haWsEventCount++;
+  Serial.printf("[haWs] %s%s -> %s (%d tiles)\n", eid, full ? " [full]" : "",
+                s.isNull() ? "brightness" : (const char*)s, hits);
+}
+
+void haWsHandleEvent(JsonVariantConst ev) {
+  JsonObjectConst added = ev["a"];   // initial full states
+  for (JsonPairConst kv : added) haWsApplyEntitySlice(kv.key().c_str(), kv.value(), true);
+  JsonObjectConst changed = ev["c"]; // subsequent diffs
+  for (JsonPairConst kv : changed) haWsApplyEntitySlice(kv.key().c_str(), kv.value(), false);
 }
 
 void haWsHandleText(uint8_t* payload, size_t len) {
   haWsLastRxMs = millis();
+  if (haWsRawLog) {
+    size_t show = len > 320 ? 320 : len;
+    Serial.printf("[haWs] rx %ub: ", (unsigned)len);
+    Serial.write(payload, show);
+    if (show < len) Serial.print(" ...");
+    Serial.println();
+  }
 
-  // Filter the parse down to just what we use - a raw state object can
-  // carry a lot of attributes and this runs on every socket message.
-  StaticJsonDocument<512> filter;
-  filter["type"] = true;
-  filter["event"]["variables"]["trigger"]["entity_id"] = true;
-  filter["event"]["variables"]["trigger"]["to_state"]["state"] = true;
-  filter["event"]["variables"]["trigger"]["to_state"]["attributes"]["brightness"] = true;
-
-  DynamicJsonDocument doc(1024);
-  if (deserializeJson(doc, payload, len, DeserializationOption::Filter(filter))) return;
-
-  const char* type = doc["type"];
+  // Read just "type" cheaply first.
+  StaticJsonDocument<48> typeFilter;
+  typeFilter["type"] = true;
+  StaticJsonDocument<96> head;
+  if (deserializeJson(head, payload, len, DeserializationOption::Filter(typeFilter))) return;
+  const char* type = head["type"];
   if (!type) return;
 
   if (strcmp(type, "auth_required") == 0) {
@@ -1925,7 +1956,16 @@ void haWsHandleText(uint8_t* payload, size_t len) {
     haWsPhase = HAWS_FAILED;
     haWs.disconnect();
   } else if (strcmp(type, "event") == 0) {
-    haWsApplyTrigger(doc["event"]["variables"]["trigger"]);
+    // subscribe_entities slices carry dynamic entity-id keys, so the parse
+    // can't be key-filtered - size the doc to the frame instead.
+    size_t cap = len + len / 2 + 512;
+    if (cap > 24000) cap = 24000;
+    DynamicJsonDocument doc(cap);
+    if (deserializeJson(doc, payload, len)) {
+      Serial.printf("[haWs] event parse failed (frame %ub) - a poll will catch up\n", (unsigned)len);
+      return;
+    }
+    haWsHandleEvent(doc["event"]);
   }
 }
 
@@ -2911,9 +2951,8 @@ void pollCurrentPageTiles(bool force) {
   if (strcmp(pg.type, "home") != 0 && strcmp(pg.type, "area") != 0) return;
   if (!haConfigured() || WiFi.status() != WL_CONNECTED) return;
   if (sliderOverlayShown) return; // each fetch blocks - would stutter the drag
-  // Live updates keep every tile current; still allow the one forced poll
-  // on page-open so a freshly-shown page isn't blank right after connect.
-  if (haWsActive() && !force) return;
+  // With live updates on, polling is only an occasional backstop for
+  // anything the socket missed - loop() stretches the interval way out.
 
   for (int i = 0; i < pg.tileCount; i++) {
     TileConfig& tl = pg.tiles[i];
@@ -2997,11 +3036,16 @@ void handleTileTap(int tileIdx) {
   }
 
   bool newState = !(rt.known && rt.on);
-  rt.on = newState;
-  rt.known = true;
-  rt.cacheKey = "";
 
-  drawTileSprite(tileIdx, slotOfTap[tileIdx], tl.size == 2, true);
+  // Don't paint an optimistic on/brightness for an entity HA says is
+  // unavailable (bulb has no power) - the command goes out anyway, but the
+  // tile keeps showing N/A until a real state says otherwise.
+  if (!(rt.known && rt.unavailable)) {
+    rt.on = newState;
+    rt.known = true;
+    rt.cacheKey = "";
+    drawTileSprite(tileIdx, slotOfTap[tileIdx], tl.size == 2, true);
+  }
 
   queueHaOnOff(tl.entityId, newState);
 }
@@ -4816,11 +4860,16 @@ void loop() {
 
   if (pageDirty) {
     drawCurrentPageFull();
-    pollCurrentPageTiles(true);
+    // Live updates keep tileRuntime current for every page, so a page-open
+    // poll is only needed when the socket isn't carrying us.
+    if (!haWsActive()) pollCurrentPageTiles(true);
     lastPollMs = millis();
   } else {
     updateCurrentPageDynamic();
-    if (millis() - lastPollMs > POLL_INTERVAL_MS) {
+    // Live updates push state as it changes, so drop the poll to a slow
+    // backstop while the socket is up (catches anything it missed).
+    unsigned long pollGap = haWsActive() ? 150000UL : POLL_INTERVAL_MS;
+    if (millis() - lastPollMs > pollGap) {
       pollCurrentPageTiles(false);
       lastPollMs = millis();
     }
