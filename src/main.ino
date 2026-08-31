@@ -1820,6 +1820,8 @@ unsigned long haWsLastRxMs = 0;
 uint32_t haWsEntitySig = 0;      // FNV hash of the subscribed entity set
 unsigned long haWsSigCheckMs = 0;
 unsigned long haWsEventCount = 0; // diagnostics
+int haWsDropCount = 0;           // socket disconnects since boot
+String haWsNote = "";            // last human-readable status detail
 
 bool haWsUrlSupported() { return strncmp(cfg.haUrl, "http://", 7) == 0; }
 bool haWsActive() { return haWsPhase == HAWS_READY; }
@@ -1914,10 +1916,12 @@ void haWsHandleText(uint8_t* payload, size_t len) {
     haWsPhase = HAWS_AUTH;
   } else if (strcmp(type, "auth_ok") == 0) {
     Serial.println("[haWs] authenticated");
+    haWsNote = "";
     haWsPhase = HAWS_READY;
     haWsSendSubscribe();
   } else if (strcmp(type, "auth_invalid") == 0) {
     Serial.println("[haWs] token rejected");
+    haWsNote = "token rejected";
     haWsPhase = HAWS_FAILED;
     haWs.disconnect();
   } else if (strcmp(type, "event") == 0) {
@@ -1928,21 +1932,26 @@ void haWsHandleText(uint8_t* payload, size_t len) {
 void haWsOnEvent(WStype_t type, uint8_t* payload, size_t len) {
   switch (type) {
     case WStype_CONNECTED:
-      Serial.println("[haWs] connected");
+      Serial.printf("[haWs] socket connected (%s)\n", (const char*)payload);
+      haWsNote = "socket up, authenticating";
       haWsPhase = HAWS_AUTH;
       haWsLastRxMs = millis();
       break;
     case WStype_DISCONNECTED:
-      if (haWsPhase == HAWS_READY || haWsPhase == HAWS_AUTH) {
-        Serial.println("[haWs] disconnected - will retry");
-        haWsPhase = HAWS_CONNECTING;
-      }
+      haWsDropCount++;
+      Serial.printf("[haWs] disconnected (#%d)\n", haWsDropCount);
+      haWsNote = "retrying";
+      if (haWsPhase == HAWS_READY || haWsPhase == HAWS_AUTH) haWsPhase = HAWS_CONNECTING;
       break;
     case WStype_TEXT:
       haWsHandleText(payload, len);
       break;
     case WStype_ERROR:
-      Serial.println("[haWs] error");
+      Serial.printf("[haWs] error: %s\n", (const char*)payload);
+      haWsNote = "socket error";
+      break;
+    case WStype_PING:
+    case WStype_PONG:
       break;
     default:
       break;
@@ -1961,6 +1970,7 @@ void haWsBegin() {
   if (!cfg.haLiveUpdates || !haConfigured()) return;
   if (!haWsUrlSupported()) {
     Serial.println("[haWs] HA URL is https:// - live updates need ws://, using polling");
+    haWsNote = "HA URL is https:// (needs http://)";
     haWsPhase = HAWS_FAILED;
     return;
   }
@@ -1972,11 +1982,13 @@ void haWsBegin() {
   String host = colon >= 0 ? u.substring(0, colon) : u;
   int port = colon >= 0 ? u.substring(colon + 1).toInt() : 8123;
 
-  Serial.printf("[haWs] connecting %s:%d/api/websocket\n", host.c_str(), port);
+  Serial.printf("[haWs] connecting to ws://%s:%d/api/websocket\n", host.c_str(), port);
+  haWsNote = "connecting to " + host + ":" + String(port);
   haWs.begin(host.c_str(), port, "/api/websocket");
   haWs.onEvent(haWsOnEvent);
   haWs.setReconnectInterval(5000);
-  haWs.enableHeartbeat(20000, 5000, 2);
+  // No WS-level heartbeat for now - HA has its own ping/pong and an
+  // unexpected ping was a suspect for the early disconnects.
   haWsPhase = HAWS_CONNECTING;
 }
 
@@ -1984,14 +1996,21 @@ void haWsBegin() {
 // config toggle + WiFi, pumps the socket, and re-subscribes when the set
 // of tracked entities changes.
 void haWsLoop() {
-  static bool lastWant = false;
   bool want = cfg.haLiveUpdates && haConfigured() && WiFi.status() == WL_CONNECTED;
 
-  if (want && !lastWant) haWsBegin();
-  if (!want && lastWant) haWsStop();
-  lastWant = want;
+  if (!want) { haWsStop(); return; }
 
-  if (haWsPhase == HAWS_OFF || haWsPhase == HAWS_FAILED) return;
+  // Level-triggered (not edge): if we're meant to be live but idle, (re)start.
+  // A settings save calls haWsStop() -> HAWS_OFF, and this picks it back up.
+  if (haWsPhase == HAWS_OFF) haWsBegin();
+
+  // FAILED (https URL / bad token) - retry every 30 s in case it was fixed
+  // without a save.
+  if (haWsPhase == HAWS_FAILED) {
+    if (millis() - haWsSigCheckMs > 30000) { haWsSigCheckMs = millis(); haWsPhase = HAWS_OFF; }
+    return;
+  }
+  if (haWsPhase == HAWS_OFF) return;
 
   haWs.loop();
 
@@ -3545,9 +3564,11 @@ void handleRoot() {
   }
   h += "<div class='check' style='margin-top:16px'><input type='checkbox' id='haLive' name='haLiveUpdates'" +
        String(cfg.haLiveUpdates ? " checked" : "") + "><label for='haLive' style='margin:0'>Live updates (experimental) &mdash; hold a WebSocket for instant tile changes instead of 30s polling</label></div>";
-  h += "<div class='muted' style='margin-top:2px'>Status: " + htmlEscape(haWsStatusText());
-  if (haWsActive() && haWsEventCount > 0) h += " &middot; " + String(haWsEventCount) + " updates received";
-  h += ". Needs a plain http:// URL. Falls back to polling on any problem.</div>";
+  h += "<div class='muted' style='margin-top:2px'>Status: <b>" + htmlEscape(haWsStatusText()) + "</b>";
+  if (haWsNote.length() > 0) h += " &middot; " + htmlEscape(haWsNote);
+  if (haWsEventCount > 0) h += " &middot; " + String(haWsEventCount) + " updates";
+  if (haWsDropCount > 0)  h += " &middot; " + String(haWsDropCount) + " drops";
+  h += "<br>Needs a plain http:// URL. Falls back to polling on any problem.</div>";
   h += "<button class='primary' type='submit'>Save Home Assistant</button>";
   h += "</section></form>";
 
