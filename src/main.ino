@@ -1934,12 +1934,21 @@ void haWsHandleText(uint8_t* payload, size_t len) {
     Serial.println();
   }
 
-  // Read just "type" cheaply first.
-  StaticJsonDocument<48> typeFilter;
-  typeFilter["type"] = true;
-  StaticJsonDocument<96> head;
-  if (deserializeJson(head, payload, len, DeserializationOption::Filter(typeFilter))) return;
-  const char* type = head["type"];
+  // ONE zero-copy parse. (An earlier "peek at type first" pass also parsed
+  // zero-copy over the same buffer, which mangled it for this pass - hence
+  // the parse failures.) subscribe_entities slices have dynamic entity-id
+  // keys so a key filter can't help; size the doc to the frame instead.
+  size_t cap = len * 2 + 768;
+  if (cap > 28000) cap = 28000;
+  DynamicJsonDocument doc(cap);
+  DeserializationError err = deserializeJson(doc, payload, len);
+  if (err) {
+    Serial.printf("[haWs] parse failed: %s (frame %ub, cap %u, heap %u)\n",
+                  err.c_str(), (unsigned)len, (unsigned)cap, (unsigned)ESP.getFreeHeap());
+    return;
+  }
+
+  const char* type = doc["type"];
   if (!type) return;
 
   if (strcmp(type, "auth_required") == 0) {
@@ -1956,15 +1965,6 @@ void haWsHandleText(uint8_t* payload, size_t len) {
     haWsPhase = HAWS_FAILED;
     haWs.disconnect();
   } else if (strcmp(type, "event") == 0) {
-    // subscribe_entities slices carry dynamic entity-id keys, so the parse
-    // can't be key-filtered - size the doc to the frame instead.
-    size_t cap = len + len / 2 + 512;
-    if (cap > 24000) cap = 24000;
-    DynamicJsonDocument doc(cap);
-    if (deserializeJson(doc, payload, len)) {
-      Serial.printf("[haWs] event parse failed (frame %ub) - a poll will catch up\n", (unsigned)len);
-      return;
-    }
     haWsHandleEvent(doc["event"]);
   }
 }
