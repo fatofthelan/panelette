@@ -816,7 +816,6 @@ int touchStartX = 0, touchStartY = 0;
 int sliderPercent = 0;
 int sliderAnchorY = 0;    // touch Y when the slider engaged
 int sliderAnchorPct = 0;  // brightness at that moment - drag is relative to here
-unsigned long lastSliderSendMs = 0;
 
 // Horizontal swipe tracking (separate from the tile long-press tracker;
 // only armed when a press starts outside any tile, i.e. on empty grid
@@ -826,11 +825,10 @@ int swipeStartX = 0, swipeStartY = 0;
 
 const unsigned long LONG_PRESS_MS = 450;
 const int MOVE_TOLERANCE = 20; // resistive touch has some inherent jitter; too tight and taps/holds misfire
-const unsigned long SLIDER_SEND_INTERVAL_MS = 250;
-// While dragging the brightness slider the resistive panel's Z (pressure)
+// While dragging the brightness slider the resistive panel's pressure
 // reading dips in and out - tolerate brief contact loss so a moving finger
 // isn't misread as "released".
-const unsigned long SLIDER_RELEASE_GRACE_MS = 140;
+const unsigned long SLIDER_RELEASE_GRACE_MS = 130;
 const int SWIPE_THRESHOLD_X = 40;
 
 // Resistive touch contact can bounce (touched()/released() flickering a
@@ -1192,6 +1190,7 @@ bool fetchWeather() {
 // so this refreshes regardless of which page is currently showing.
 void ensureWeather() {
   if (WiFi.status() != WL_CONNECTED) return;
+  if (sliderOverlayShown) return; // the fetch blocks - don't stutter an active drag
 
   time_t nowT = time(nullptr);
   if (weatherKnown && (nowT - lastWeatherFetch) < (time_t)WEATHER_INTERVAL_SEC) return;
@@ -1592,6 +1591,7 @@ HaConnState haProbeConnection() {
 // Called from loop(). Re-probes on a slow interval; only forces a redraw
 // when the state changes while the Status page is showing.
 void ensureHaCheck() {
+  if (sliderOverlayShown) return; // the probe blocks - don't stutter an active drag
   if (haConnState != HA_CONN_UNKNOWN && millis() - lastHaCheckMs < HA_CHECK_INTERVAL_MS) return;
   lastHaCheckMs = millis();
   HaConnState s = haProbeConnection();
@@ -2181,22 +2181,22 @@ const int BRO_TRK_Y  = BRO_Y + 82;
 const int BRO_TRK_H  = BRO_Y + BRO_H - 18 - BRO_TRK_Y;
 
 void drawBrightnessOverlayValue(int percent) {
-  // Percentage readout.
-  tft.fillRect(BRO_X + 10, BRO_VAL_Y - 2, BRO_W - 20, 34, COL_PANEL);
+  // Percentage readout - the clear box is deliberately generous since the
+  // big font is tall, so no glyph fragments survive between updates.
+  tft.fillRect(BRO_X + 6, BRO_VAL_Y - 4, BRO_W - 12, 42, COL_PANEL);
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_ACCENT, COL_PANEL);
   uiDrawString(tft, String(percent) + "%", SCREEN_W / 2, BRO_VAL_Y, 4);
+  tft.setTextDatum(TL_DATUM);
 
-  // Track fill (grows from the bottom) and the grab line at its top.
+  // Track interior: full clear, then a flat fill rising from the bottom.
+  // Plain fillRect only - no anti-aliased edges and no handle overhanging
+  // the track - so nothing is left behind as the level sweeps up and down.
   int ix = BRO_TRK_X + 4, iw = BRO_TRK_W - 8;
   int iy = BRO_TRK_Y + 4, ih = BRO_TRK_H - 8;
+  tft.fillRect(ix, iy, iw, ih, COL_PANEL);
   int fillH = ih * percent / 100;
-  tft.fillRect(ix, iy, iw, ih - fillH, COL_PANEL);
-  if (fillH > 0) uiFillRR(tft, ix, iy + ih - fillH, iw, fillH, 9, COL_ACCENT, COL_PANEL);
-
-  int hy = iy + ih - fillH;
-  tft.drawFastHLine(BRO_TRK_X - 5, hy, BRO_TRK_W + 10, COL_TEXT);
-  tft.drawFastHLine(BRO_TRK_X - 5, hy + 1, BRO_TRK_W + 10, COL_TEXT);
+  if (fillH > 0) tft.fillRect(ix, iy + ih - fillH, iw, fillH, COL_ACCENT);
 }
 
 void drawBrightnessOverlay(const String& label, int percent) {
@@ -2631,12 +2631,12 @@ void pollCurrentPageTiles(bool force) {
   PageConfig& pg = cfg.pages[currentPageIndex];
   if (strcmp(pg.type, "home") != 0 && strcmp(pg.type, "area") != 0) return;
   if (!haConfigured() || WiFi.status() != WL_CONNECTED) return;
+  if (sliderOverlayShown) return; // each fetch blocks - would stutter the drag
 
   for (int i = 0; i < pg.tileCount; i++) {
     TileConfig& tl = pg.tiles[i];
     if (strlen(tl.entityId) == 0) continue;
     if (strcmp(tl.type, "light") != 0 && strcmp(tl.type, "switch") != 0 && strcmp(tl.type, "sensor") != 0) continue;
-    if (sliderActive && touchTileIndex == i) continue; // don't stomp an active drag
 
     TileRuntime& rt = tileRuntime[currentPageIndex][i];
     if (haFetchEntityState(tl.entityId, rt)) {
@@ -2852,62 +2852,63 @@ void handleContinuousTouch() {
   PageConfig& pg = cfg.pages[currentPageIndex];
   bool isGridPage = (strcmp(pg.type, "home") == 0 || strcmp(pg.type, "area") == 0);
 
-  // --- Active brightness slider: owns the touch stream until a *sustained*
-  // release, so resistive-contact flicker during the drag can't collapse it. ---
+  // --- Active brightness slider: owns the whole touch stream. Nothing here
+  // makes a blocking network call (that froze the drag) - the value is only
+  // pushed to HA once, on release. Resistive-contact flicker is filtered so
+  // a moving finger isn't misread as a release, and a stray blip after the
+  // real release can't hold the overlay open. ---
   if (sliderActive) {
-    static unsigned long sliderLostMs = 0;
+    static unsigned long lostSinceMs = 0; // first moment contact went away (0 = solid)
+    static unsigned long downSinceMs = 0; // first moment of the current contact run
     int idx = touchTileIndex;
     bool valid = (idx >= 0 && idx < pg.tileCount);
+    if (!valid) down = false; // tile vanished under us - fall through to release
 
-    if (down && valid) {
-      sliderLostMs = 0;
-      TileConfig& tl = pg.tiles[idx];
+    if (down) {
+      if (downSinceMs == 0) downSinceMs = millis();
+      // After a dropout, only trust contact again once it's held ~40 ms -
+      // isolated post-release blips never last that long.
+      if (lostSinceMs != 0 && millis() - downSinceMs < 40) { wasDown = true; return; }
+      lostSinceMs = 0;
+
       int pct = brightnessOverlayPctFromDrag(y);
       if (pct != sliderPercent) {
         sliderPercent = pct;
         drawBrightnessOverlayValue(sliderPercent);
-        unsigned long now = millis();
-        if (now - lastSliderSendMs >= SLIDER_SEND_INTERVAL_MS) {
-          lastSliderSendMs = now;
-          haSendBrightness(tl.entityId, sliderPercent);
-          TileRuntime& rt = tileRuntime[currentPageIndex][idx];
-          rt.brightnessPct = sliderPercent;
-          rt.on = sliderPercent > 0;
-          rt.known = true;
-        }
       }
       wasDown = true;
       return;
     }
 
-    if (down && !valid) { down = false; } // tile vanished under us - treat as release
+    // not down
+    downSinceMs = 0;
+    if (lostSinceMs == 0) lostSinceMs = millis();
+    if (millis() - lostSinceMs < SLIDER_RELEASE_GRACE_MS) { wasDown = true; return; }
 
-    if (!down) {
-      if (sliderLostMs == 0) sliderLostMs = millis();
-      if (millis() - sliderLostMs < SLIDER_RELEASE_GRACE_MS) return; // brief dropout, hold
-
-      // Real release: push the final value and tear the overlay down.
-      sliderLostMs = 0;
-      if (valid) {
-        TileConfig& tl = pg.tiles[idx];
-        haSendBrightness(tl.entityId, sliderPercent);
-        TileRuntime& rt = tileRuntime[currentPageIndex][idx];
-        rt.brightnessPct = sliderPercent;
-        rt.on = sliderPercent > 0;
-        rt.known = true;
-        rt.cacheKey = "";
-      }
-      sliderActive = false;
-      sliderOverlayShown = false;
-      touchDown = false;
-      touchTileIndex = -1;
-      touchMoved = false;
-      swipeCandidate = false;
-      wasDown = false;
-      lastTouchReleaseMs = millis();
-      pageDirty = true; // full redraw wipes the overlay and restores the grid
-      return;
+    // Sustained release: tear the overlay down and repaint the page *now*,
+    // then push the final brightness (that POST can block for a moment).
+    lostSinceMs = 0;
+    int sendPct = sliderPercent;
+    String sendEntity = valid ? String(pg.tiles[idx].entityId) : String();
+    if (valid) {
+      TileRuntime& rt = tileRuntime[currentPageIndex][idx];
+      rt.brightnessPct = sendPct;
+      rt.on = sendPct > 0;
+      rt.known = true;
+      rt.cacheKey = "";
     }
+    sliderActive = false;
+    sliderOverlayShown = false;
+    touchDown = false;
+    touchTileIndex = -1;
+    touchMoved = false;
+    swipeCandidate = false;
+    wasDown = false;
+    lastTouchReleaseMs = millis();
+
+    drawCurrentPageFull(); // overlay gone immediately, before the network wait
+    if (sendEntity.length() > 0) haSendBrightness(sendEntity.c_str(), sendPct);
+    return;
   }
 
   if (down && !wasDown) {
@@ -2957,7 +2958,6 @@ void handleContinuousTouch() {
 
       drawBrightnessOverlay(tl.label, sliderPercent);
       sliderOverlayShown = true;
-      lastSliderSendMs = 0;
     }
   } else if (!down && wasDown) {
     lastTouchReleaseMs = millis();
