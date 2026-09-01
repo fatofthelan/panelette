@@ -1,0 +1,62 @@
+name: release
+
+# Push a tag like v1.0.1 (after bumping FW_VERSION in src/main.ino):
+#   git tag v1.0.1 && git push --tags
+# CI builds the firmware, refreshes the browser-installer artifacts under
+# docs/ on main, and cuts a GitHub Release with the flash parts attached.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # need main to commit the artifacts back
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Check tag matches FW_VERSION
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          FW="$(grep -oE '#define FW_VERSION "[^"]+"' src/main.ino | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+          echo "tag=$TAG  FW_VERSION=$FW"
+          [ "$TAG" = "$FW" ] || { echo "::error::tag v$TAG does not match FW_VERSION $FW - bump src/main.ino first"; exit 1; }
+
+      # No secrets.h in the repo, so this builds the installer image cleanly.
+      - name: Build + stage installer artifacts
+        run: tools/build-installer.sh
+
+      - name: Commit refreshed docs/ to main
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git add docs/manifest.json docs/firmware
+          if git diff --cached --quiet; then
+            echo "docs/ unchanged"
+          else
+            git commit -m "release ${GITHUB_REF_NAME}: refresh installer artifacts [skip ci]"
+            git push origin main
+          fi
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            docs/firmware/bootloader.bin
+            docs/firmware/partitions.bin
+            docs/firmware/boot_app0.bin
+            docs/firmware/firmware.bin
