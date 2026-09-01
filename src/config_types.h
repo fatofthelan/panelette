@@ -112,3 +112,13 @@ enum HaConnState {
   HA_CONN_AUTH_FAIL,    // 401/403 - token wrong or lacks scope
   HA_CONN_UNREACHABLE   // no WiFi, connect/DNS failure, or other error
 };
+
+// Where the panel's Wi-Fi credentials came from. In this header (not the
+// .ino) because wifiResolveCreds() returns it and the auto-prototype block
+// would otherwise reference the type before it's defined - same reason as
+// HaConnState above.
+enum WifiCredSource {
+  WCS_NONE,    // no credentials anywhere - on-device setup takes over
+  WCS_COMPILE, // baked in via include/secrets.h (source builds)
+  WCS_STORED   // saved in NVS by the setup flow
+};

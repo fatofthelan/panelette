@@ -63,6 +63,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <SPI.h>
+#include <Preferences.h> // NVS-backed store for Wi-Fi credentials (see the wifiCreds* module)
 #include <XPT2046_Touchscreen.h>
 #include <WebSocketsClient.h> // optional HA WebSocket live updates - see haWs* module
 #include <TFT_eSPI.h>
@@ -72,7 +73,14 @@
 // they have no include guards, so re-including caused redefinition errors.
 #include <time.h>
 #include "config_types.h"
-#include "secrets.h" // WIFI_SSID / WIFI_PASSWORD - gitignored, copy from secrets.h.example
+// secrets.h is now OPTIONAL. A source build can still drop real Wi-Fi
+// credentials in include/secrets.h (gitignored, copy from
+// secrets.h.example) and they take priority; without it, the panel gets
+// online via stored credentials or the on-device setup flow. Browser /
+// CI builds compile fine with no secrets.h at all.
+#if __has_include("secrets.h")
+  #include "secrets.h" // #defines WIFI_SSID / WIFI_PASSWORD
+#endif
 #include "NotoSansB18.h" // anti-aliased .vlw fonts: Noto Sans (typeface "sans")
 #include "NotoSansB30.h"
 #include "PlexMono16.h"  //                          IBM Plex Mono (typeface "mono")
@@ -338,6 +346,85 @@ void applyNetworkConfig() {
   if (strlen(cfg.dns1) == 0 || !d1.fromString(cfg.dns1)) d1 = gw;
   if (strlen(cfg.dns2) == 0 || !d2.fromString(cfg.dns2)) d2 = IPAddress((uint32_t)0);
   WiFi.config(ip, gw, sn, d1, d2);
+}
+
+// =========================================================
+// WI-FI CREDENTIALS
+// =========================================================
+// Credentials live in NVS (the ESP32 key-value flash store), NOT in
+// /config.json - so a config reset or a LittleFS reformat can't lock the
+// panel off the network, and they're never part of an exported backup.
+// A real include/secrets.h (source builds) overrides them.
+//
+// Resolution order, boot: compile-time secrets.h  ->  NVS  ->  none
+// (none = the on-device setup flow takes over, added in a later step).
+
+Preferences wifiPrefs;
+const char* WIFI_NVS_NAMESPACE = "wifi";
+
+char gWifiSsid[33] = "";  // 32-char max SSID + NUL
+char gWifiPass[65] = "";  // 63-char max passphrase (or 64-hex PSK) + NUL
+WifiCredSource gWifiCredSource = WCS_NONE; // enum in config_types.h
+
+// true if a genuine (non-placeholder) SSID was baked in via secrets.h.
+bool compileWifiUsable() {
+#if defined(WIFI_SSID) && defined(WIFI_PASSWORD)
+  const char* s = WIFI_SSID;
+  return strlen(s) > 0 && strcmp(s, "your-wifi-ssid") != 0;
+#else
+  return false;
+#endif
+}
+
+bool wifiCredsLoadFromNvs(char* ssid, size_t ssidN, char* pass, size_t passN) {
+  wifiPrefs.begin(WIFI_NVS_NAMESPACE, /*readOnly=*/true);
+  String s = wifiPrefs.getString("ssid", "");
+  String p = wifiPrefs.getString("pass", "");
+  wifiPrefs.end();
+  if (s.length() == 0) return false;
+  strlcpy(ssid, s.c_str(), ssidN);
+  strlcpy(pass, p.c_str(), passN);
+  return true;
+}
+
+void wifiCredsSaveToNvs(const char* ssid, const char* pass) {
+  wifiPrefs.begin(WIFI_NVS_NAMESPACE, /*readOnly=*/false);
+  wifiPrefs.putString("ssid", ssid);
+  wifiPrefs.putString("pass", pass);
+  wifiPrefs.end();
+}
+
+void wifiCredsClearNvs() {
+  wifiPrefs.begin(WIFI_NVS_NAMESPACE, /*readOnly=*/false);
+  wifiPrefs.clear();
+  wifiPrefs.end();
+}
+
+// Picks the credentials to use and records where they came from. Also
+// mirrors a secrets.h SSID into NVS the first time it's seen, so a later
+// no-secrets build flashed onto the same chip (without a full erase) still
+// comes up on Wi-Fi.
+WifiCredSource wifiResolveCreds() {
+  if (compileWifiUsable()) {
+#if defined(WIFI_SSID) && defined(WIFI_PASSWORD)
+    strlcpy(gWifiSsid, WIFI_SSID, sizeof(gWifiSsid));
+    strlcpy(gWifiPass, WIFI_PASSWORD, sizeof(gWifiPass));
+#endif
+    char ns[33] = "", np[65] = "";
+    if (!wifiCredsLoadFromNvs(ns, sizeof(ns), np, sizeof(np)) ||
+        strcmp(ns, gWifiSsid) != 0 || strcmp(np, gWifiPass) != 0) {
+      wifiCredsSaveToNvs(gWifiSsid, gWifiPass);
+    }
+    gWifiCredSource = WCS_COMPILE;
+    return gWifiCredSource;
+  }
+  if (wifiCredsLoadFromNvs(gWifiSsid, sizeof(gWifiSsid), gWifiPass, sizeof(gWifiPass))) {
+    gWifiCredSource = WCS_STORED;
+    return gWifiCredSource;
+  }
+  gWifiSsid[0] = gWifiPass[0] = '\0';
+  gWifiCredSource = WCS_NONE;
+  return gWifiCredSource;
 }
 
 void applyTimezone() {
@@ -4728,7 +4815,13 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   applyNetworkConfig(); // static IP, if configured - must precede WiFi.begin()
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  WifiCredSource cs = wifiResolveCreds();
+  Serial.printf("Wi-Fi credentials: %s\n",
+                cs == WCS_COMPILE ? "from secrets.h" :
+                cs == WCS_STORED  ? "from device storage" : "NONE (setup needed)");
+
+  WiFi.begin(gWifiSsid, gWifiPass);
   unsigned long wifiStart = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
     delay(250);
@@ -4743,7 +4836,7 @@ void setup() {
     WiFi.config((uint32_t)0, (uint32_t)0, (uint32_t)0);
     WiFi.disconnect();
     delay(100);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(gWifiSsid, gWifiPass);
     wifiStart = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
       delay(250);
@@ -4781,7 +4874,7 @@ void setup() {
       }
     }
   } else {
-    Serial.println("WiFi connection failed - check WIFI_SSID/WIFI_PASSWORD in secrets.h.");
+    Serial.println("Wi-Fi connection failed. (On-device setup mode comes in a later build step.)");
   }
 
   setupWebServer();
