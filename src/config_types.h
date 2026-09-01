@@ -17,7 +17,7 @@
 struct TileConfig {
   char type[12];      // "light" | "switch" | "sensor" | "blank"
   char label[24];
-  char entityId[48];  // e.g. "light.tobias_bedside"
+  char entityId[48];  // e.g. "light.living_room_lamp"
   uint8_t size;        // 1 = single cell, 2 = wide (spans both columns)
   bool dateEuro;       // "date"/"datewide" tiles: false = M/D/Y (US, default), true = D/M/Y
 };

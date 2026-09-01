@@ -25,6 +25,12 @@ Desktop.ini
 *.orig
 *.bak
 
+# Local AI-assistant state / per-machine agent config (CLAUDE.md itself is
+# tracked on purpose - it doubles as the contributor tech reference)
+.claude/
+.cursor/
+.aider*
+
 # Device WiFi credentials - keep the .example template tracked
 include/secrets.h
 !include/secrets.h.example

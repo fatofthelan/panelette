@@ -3870,7 +3870,7 @@ void handlePageManage() {
     h += "<label>Label</label><input name='label' placeholder='e.g. Bedside Lamp'>";
     h += "<div class='check'><input type='checkbox' id='dateEuro' name='dateEuro'><label for='dateEuro' style='margin:0'>Date tiles: day/month order (30/8/2026) &mdash; unchecked is US month/day</label></div>";
     h += "<label>Entity ID (not used for Weather / Timer / Sun / Date tiles)</label>";
-    h += "<input name='entityId' list='entlist' autocomplete='off' placeholder='e.g. light.tobias_bedside'>";
+    h += "<input name='entityId' list='entlist' autocomplete='off' placeholder='e.g. light.living_room_lamp'>";
     h += "<datalist id='entlist'></datalist>";
     h += "<div class='muted' id='entHint'></div>";
     h += "<label>Size</label><select name='size'><option value='1'>1x1</option><option value='2'>1x2 (wide)</option></select>";
