@@ -562,22 +562,34 @@ void improvHandleWifi(const uint8_t* cd, uint8_t cdLen) {
   Serial.printf("[improv] Wi-Fi settings for '%s'\n", ssid);
 
   improvSendState(IMP_STATE_PROVISIONING);
-  wifiCredsSaveToNvs(ssid, pass);
 
-  WiFi.mode(WIFI_AP_STA);
+  // Connect FIRST, save only on success. WiFi.status() can read stale
+  // WL_CONNECTED while switching networks, so also require a real IP.
+  WiFi.disconnect(false, true);
+  delay(200);
   WiFi.begin(ssid, pass);
   unsigned long t = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) delay(200);
+  while (millis() - t < 15000) {
+    wl_status_t s = WiFi.status();
+    if (s == WL_CONNECTED && WiFi.localIP() != IPAddress((uint32_t)0)) break;
+    if (s == WL_CONNECT_FAILED || s == WL_NO_SSID_AVAIL) break;
+    delay(200);
+  }
+  bool ok = (WiFi.status() == WL_CONNECTED) && (WiFi.localIP() != IPAddress((uint32_t)0));
 
-  if (WiFi.status() == WL_CONNECTED) {
+  if (ok) {
+    wifiCredsSaveToNvs(ssid, pass);
     improvSendState(IMP_STATE_PROVISIONED);
     improvSendDeviceUrl(IMP_CMD_WIFI);
-    Serial.println("[improv] connected - restarting into normal mode");
+    Serial.printf("[improv] connected as %s - restarting\n", WiFi.localIP().toString().c_str());
     delay(500);
     ESP.restart();
   } else {
     improvSendError(IMP_ERR_CANT_CONNECT);
-    Serial.println("[improv] could not connect with those credentials");
+    Serial.println("[improv] could not connect - reverting");
+    WiFi.disconnect(false, true);
+    delay(200);
+    if (gWifiSsid[0]) WiFi.begin(gWifiSsid, gWifiPass); // back onto the booted network
   }
 }
 
@@ -5100,14 +5112,33 @@ void handleProvSave() {
     server.send(400, "text/html", provPageHtml("<h1>Panelette</h1><p>Please enter a network name. <a href='/'>Back</a></p>"));
     return;
   }
-  wifiCredsSaveToNvs(ssid.c_str(), pass.c_str());
-  Serial.printf("[prov] saved network '%s' - restarting\n", ssid.c_str());
 
-  String b = "<h1>Saved</h1><p class='d'>The panel is restarting and will join <b>" + ssid + "</b>.</p>";
-  b += "<div class='n'>If it can't connect, it comes back as its own <b>" + String(gApSsid) +
-       "</b> network &mdash; reconnect to that and try again.</div>";
+  // Verify before saving - a wrong password shouldn't get written to NVS.
+  Serial.printf("[prov] trying '%s'\n", ssid.c_str());
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  unsigned long t = millis();
+  while (millis() - t < 14000) {
+    wl_status_t s = WiFi.status();
+    if (s == WL_CONNECTED && WiFi.localIP() != IPAddress((uint32_t)0)) break;
+    if (s == WL_CONNECT_FAILED || s == WL_NO_SSID_AVAIL) break;
+    delay(200);
+  }
+  bool ok = (WiFi.status() == WL_CONNECTED) && (WiFi.localIP() != IPAddress((uint32_t)0));
+
+  if (!ok) {
+    WiFi.disconnect(false, true);
+    Serial.println("[prov] connect failed - not saved");
+    String b = "<h1>Couldn't connect</h1><p class='d'>Check the password for <b>" + ssid + "</b> and try again.</p>"
+               "<a class='n' href='/' style='display:block;text-decoration:none'>&larr; Back to setup</a>";
+    server.send(200, "text/html", provPageHtml(b));
+    return; // stay in provisioning
+  }
+
+  wifiCredsSaveToNvs(ssid.c_str(), pass.c_str());
+  Serial.printf("[prov] connected as %s - saved, restarting\n", WiFi.localIP().toString().c_str());
+  String b = "<h1>Connected</h1><p class='d'>The panel joined <b>" + ssid + "</b> and is restarting.</p>";
   server.send(200, "text/html", provPageHtml(b));
-  delay(700); // flush the response
+  delay(700);
   ESP.restart();
 }
 
@@ -5298,7 +5329,7 @@ void handleProvisioning() {
     WiFi.begin(gWifiSsid, gWifiPass);
     unsigned long t = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t < 12000) delay(200);
-    if (WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress((uint32_t)0)) {
       Serial.println("[prov] connected - restarting into normal mode");
       delay(300);
       ESP.restart();
