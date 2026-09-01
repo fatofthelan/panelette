@@ -3049,6 +3049,12 @@ void drawStatusPageFull() {
                    cfg.flipScreen ? "Flip: On" : "Flip: Off", false);
   drawStatusButton(STATUS_BTN_FULL_X, STATUS_ROW2_BTN_Y, STATUS_BTN_FULL_W,
                    rebootArmed ? "Tap again to reboot" : "Reboot", rebootArmed);
+
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(COL_DIM, COL_BG);
+  uiDrawString(tft, String(FW_NAME) + "  v" + FW_VERSION,
+               SCREEN_W / 2, STATUS_ROW2_BTN_Y + STATUS_BTN_H + 3, 1);
+  tft.setTextDatum(TL_DATUM);
 }
 
 void drawForecastPageFull() {
@@ -3905,6 +3911,7 @@ String sortableScript() {
 void handleRoot() {
   String h = pageHeaderHtml("Panelette Settings");
   h += "<h1>PANELETTE <span class='dim'>&mdash; " + htmlEscape(cfg.deviceName) + "</span></h1>";
+  h += "<div class='muted' style='margin:-2px 0 8px'>v" FW_VERSION "</div>";
 
   if (gSaveNotice.length() > 0) {
     h += "<div class='notice'>" + htmlEscape(gSaveNotice) + "</div>";
@@ -4026,6 +4033,19 @@ void handleRoot() {
   h += "<script>(function(){var f=document.getElementById('staticFields');"
        "function u(){f.style.display=document.querySelector('input[name=netMode]:checked').value=='static'?'':'none';}"
        "var r=document.getElementsByName('netMode');for(var i=0;i<r.length;i++)r[i].addEventListener('change',u);u();})();</script>";
+
+  h += "<h3>Wi-Fi network</h3>";
+  h += "<div class='muted'>Currently on <b>" + htmlEscape(WiFi.SSID()) + "</b>.</div>";
+  if (gWifiCredSource == WCS_COMPILE) {
+    h += "<div class='muted' style='margin-top:4px'>Wi-Fi is compiled into this build "
+         "(<code>include/secrets.h</code>). Edit that and re-flash to change it.</div>";
+  } else {
+    char apName[24]; makeDefaultDeviceName(apName, sizeof(apName));
+    h += "<div class='muted' style='margin:4px 0 6px'>Forget it to move the panel to a different "
+         "network - it restarts into setup mode (its own <b>" + htmlEscape(apName) + "</b> network).</div>";
+    h += "<form method='POST' action='/wifi/forget' onsubmit=\"return confirm('Forget this Wi-Fi network and restart into setup mode?');\">";
+    h += "<button class='danger' type='submit'>Forget Wi-Fi &amp; restart</button></form>";
+  }
   h += "</section>";
 
   // ---- Pages ----------------------------------------------------------
@@ -4495,6 +4515,15 @@ void sendRebootPage(const String& heading, const String& detail) {
 
 void handleReboot() {
   sendRebootPage("Rebooting", "");
+}
+
+void handleWifiForget() {
+  wifiCredsClearNvs();
+  Serial.println("[wifi] credentials cleared - restarting into setup mode");
+  char apName[24]; makeDefaultDeviceName(apName, sizeof(apName));
+  sendRebootPage("Wi-Fi forgotten",
+                 "Restarting into setup mode. Join the panel's own <b>" + String(apName) +
+                 "</b> Wi-Fi network to reconnect it.");
 }
 
 void handleSaveNetwork() {
@@ -5103,6 +5132,7 @@ void setupWebServer() {
   server.on("/page", handlePageManage);
   server.on("/save-device", HTTP_POST, handleSaveDevice);
   server.on("/save-network", HTTP_POST, handleSaveNetwork);
+  server.on("/wifi/forget", HTTP_POST, handleWifiForget);
   server.on("/reboot", HTTP_POST, handleReboot);
   server.on("/save-flash", HTTP_POST, handleSaveFlash);
   server.on("/save-timers", HTTP_POST, handleSaveTimers);
