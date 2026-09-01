@@ -55,7 +55,7 @@ so two on one network won't clash. You can rename it in the web UI.
 
 **If you have `git`:**
 ```
-git clone <REPO-URL> panelette
+git clone https://github.com/fatofthelan/panelette.git
 cd panelette
 ```
 
