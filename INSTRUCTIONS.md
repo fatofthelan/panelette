@@ -4,13 +4,32 @@
 **ESP32-2432S028R** ("CYD" - Cheap Yellow Display), a ~$15 2.8" 240x320
 touchscreen board.
 
-Tap to toggle lights and switches, press-and-drag on a light to dim it,
-swipe between pages, see a live weather forecast, and run kitchen-style
-timers that can flash your lights when they finish.
+Tap to toggle lights and switches, press-and-hold a light for a brightness
+slider, swipe between pages, see a live weather forecast, and run
+kitchen-style timers that can flash your lights when they finish.
 
 ---
 
-## What you need
+## Two ways to install
+
+### Easiest - browser installer (no IDE)
+Open **https://fatofthelan.github.io/panelette/** in **Chrome, Edge, or
+Opera on a computer**, plug the board into USB, and click **Install**. It
+flashes the firmware and then asks for your Wi-Fi. That's it - skip the
+rest of this guide and jump to [Step 8](#step-8---connect-the-panel-to-home-assistant)
+to connect Home Assistant.
+
+On a phone, or using Safari/Firefox? Flash from a desktop but **skip** the
+Wi-Fi prompt - the panel comes up as its own `PaneletteXXXX` Wi-Fi network
+with a setup page you open from your phone.
+
+### Build from source
+The rest of this guide. Use this if you want to change the code, or if the
+browser installer won't work for you. You get the same firmware.
+
+---
+
+## What you need (build from source)
 
 ### Hardware
 - An **ESP32-2432S028R** board (the common "CYD" / Cheap Yellow Display, the
@@ -80,7 +99,10 @@ then unzip it somewhere permanent (not your Downloads folder).
 
 ## Step 3 - Enter your Wi-Fi credentials
 
-The panel needs your Wi-Fi name and password compiled into the firmware.
+**This step is optional.** If you skip it, the panel boots into setup mode
+(its own `PaneletteXXXX` Wi-Fi network with a setup page) and you enter your
+network there - see Step 6. Baking Wi-Fi into the firmware just saves that
+one step.
 
 1. In VS Code's file explorer, open the **`include`** folder.
 2. Find **`secrets.h.example`**. Right-click it -> **Copy**, then right-click
@@ -94,11 +116,8 @@ The panel needs your Wi-Fi name and password compiled into the firmware.
    Keep the quotes. Save the file.
 
 `secrets.h` is git-ignored, so your password will not be committed if you
-later push changes.
-
-> **There is no on-screen Wi-Fi setup.** If you get the password wrong, the
-> panel simply shows "No WiFi connection" and you'll need to fix `secrets.h`
-> and re-flash (Step 5). Double-check it now.
+later push changes. Compiled-in credentials take priority over anything set
+on the device; edit `secrets.h` and re-flash to change them.
 
 ---
 
@@ -128,15 +147,30 @@ Leave the `:8123` port unless you've changed it. Save the file.
    Hash of data verified.
    [SUCCESS]
    ```
-4. The panel reboots on its own and shows the **Home** screen with a clock.
+4. The panel reboots on its own and shows the **Home** screen with a clock
+   (or the **Wi-Fi setup** screen if you skipped Step 3).
 
 If upload fails, see **Troubleshooting** below.
 
 ---
 
-## Step 6 - Find the panel on your network
+## Step 6 - Get the panel on your network
 
-The panel needs no further USB connection - it's now on Wi-Fi.
+**If you baked Wi-Fi in at Step 3**, it's already connected - skip to
+finding it below.
+
+**If you skipped Step 3**, the panel shows a **Wi-Fi setup** screen:
+
+1. On a phone or laptop, join the Wi-Fi network named **`PaneletteXXXX`**
+   (open, no password).
+2. A setup page opens automatically (or browse to `http://192.168.4.1`).
+3. Pick your network, enter the password, **Save & connect**. The panel
+   restarts and joins your network.
+
+You can also re-run this later: **Network** card in the web UI ->
+**Forget Wi-Fi & restart**.
+
+### Find it
 
 - On the panel, swipe left/right to the **Status** page. It shows:
   - **WiFi:** Connected / Disconnected

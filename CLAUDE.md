@@ -27,10 +27,16 @@ build-config changes.
   the anti-aliased `.vlw` fonts as `PROGMEM` byte arrays. See "Fonts".
 - `tools/ttf2vlw.py` - the TTF -> `.vlw` converter that generated those
   (freetype-py, no Processing IDE needed). See "Fonts".
-- `include/secrets.h` - `WIFI_SSID` / `WIFI_PASSWORD` `#define`s. Gitignored.
-  Copy `include/secrets.h.example` to it and fill in real values.
+- `include/secrets.h` - OPTIONAL `WIFI_SSID` / `WIFI_PASSWORD` `#define`s.
+  Gitignored. `#if __has_include` in main.ino - the firmware builds and
+  runs without it (on-device Wi-Fi setup takes over). Copy from
+  `secrets.h.example`; the `"your-wifi-ssid"` placeholder counts as not-set.
 - `platformio.ini` - single env `[env:esp32dev]`. Read its comments before
   changing `build_flags` or `lib_deps`.
+- `docs/` - the GitHub Pages site: `index.html` (ESP Web Tools install
+  page), `manifest.json`, and `firmware/*.bin` (the four flash parts).
+  `tools/build-installer.sh` regenerates them; `.github/workflows/release.yml`
+  runs that on a `v*` tag and cuts a Release.
 
 ## Build environment (PlatformIO)
 
@@ -252,10 +258,50 @@ they render jagged.
 - Tap vs. long-press vs. swipe are disambiguated by `MOVE_TOLERANCE`
   and `LONG_PRESS_MS`.
 
+## Wi-Fi credentials & on-device setup
+
+- **Credentials live in NVS** (`Preferences`, namespace `"wifi"`), NOT in
+  `/config.json` - a config reset or LittleFS reformat can't lock the panel
+  off the network, and they're never in an exported backup. `wifiCreds*`
+  functions. `wifiCredsLoadFromNvs()` opens read-write on purpose (a
+  first-ever read on a fresh chip would otherwise log `nvs_open NOT_FOUND`).
+- **`wifiResolveCreds()`** at boot picks: compile-time `secrets.h` (real,
+  non-placeholder) -> NVS -> none, into `gWifiSsid`/`gWifiPass` +
+  `gWifiCredSource`. A `secrets.h` SSID is mirrored into NVS on first boot
+  (so a later no-`secrets.h` flash of the same chip still connects).
+- **`setup()`**: if creds resolve to NONE, or they won't connect, it calls
+  `startProvisioning()` instead of just failing.
+- **Provisioning mode** (`gProvisioning`): `WIFI_AP_STA`, open SoftAP named
+  `makeDefaultDeviceName()` (`PaneletteXXXX`), `DNSServer` wildcard ->
+  192.168.4.1. `loop()` short-circuits to `handleProvisioning()` (serves
+  the tiny Wi-Fi-only portal, holds the setup screen, retries stored creds
+  every 60 s and reboots on success). `setupWebServer()` registers ONLY the
+  portal routes (`/`, `/wifi/save`, `/wifi/scan`, `onNotFound` captive
+  redirect) while `gProvisioning`.
+- Portal + Improv both do: save to NVS -> `WiFi.begin` -> reboot on
+  success. Reboot (not a live hand-off) keeps setup() as the single place
+  that brings up NTP / mDNS / HA / the web UI.
+- **`/wifi/forget`** (web Network card) clears NVS and reboots; hidden when
+  `gWifiCredSource == WCS_COMPILE` (nothing to forget - it's in the binary).
+
+## Improv-Serial (`improvLoop()`, runs every loop, all modes)
+
+- Hand-rolled, ~250 lines, no dependency. Spec: improv-wifi.com/serial.
+- Packet: `IMPROV | ver(1) | type(1) | len(1) | data | checksum(1)`. Parsing
+  is bounds-checked against `len` (untrusted USB input).
+- Handles `GET_DEVICE_INFO` (`FW_NAME` / `FW_VERSION` / `"ESP32"` / device
+  name - this is what lets ESP Web Tools offer *update* vs *install*),
+  `GET_CURRENT_STATE` (+ `http://<ip>` when connected), `GET_WIFI_NETWORKS`
+  (streamed scan + empty end marker), `WIFI_SETTINGS` (save/connect/reboot,
+  or Error), `IDENTIFY` (screen flash).
+- `FW_NAME` / `FW_VERSION` `#define`s near the top of main.ino - also the
+  serial banner, the Status-page footer, and the web-UI header.
+
 ## Config system
 
 - Settings persist as `/config.json` on LittleFS (not the NVS `Preferences`
-  API) - needed because the page/tile lists are variable-length.
+  API) - needed because the page/tile lists are variable-length. (Wi-Fi
+  creds are the exception - see above.)
 - Import/export both exist in the web UI. Export filename is
   `panelette-<devicename>-<m.d.yyyy>.json` (falls back to `0.0.0` for the date
   if NTP has not synced yet).
@@ -391,19 +437,31 @@ they render jagged.
   `cfg.marqueeEnabled`. Earlier it was a solid border for the whole
   countdown.
 
+## Browser installer (ESP Web Tools)
+
+- Shipped. `docs/index.html` + `docs/manifest.json` + `docs/firmware/*.bin`,
+  served by GitHub Pages (`main/docs` after the feature branch merges).
+- **Multi-part manifest** (four parts at their offsets), NOT a merged
+  single `.bin` - so an ESP Web Tools *update* writes only those regions
+  and leaves NVS (Wi-Fi creds) + the LittleFS config partition alone. A
+  first install still full-erases (`new_install_prompt_erase: true`).
+- `tools/build-installer.sh` builds with `secrets.h` moved aside and stages
+  the parts. `.github/workflows/release.yml` runs it on a `v*` tag,
+  verifies the tag matches `FW_VERSION`, commits the refreshed `docs/` to
+  `main`, and cuts a Release.
+
 ## What's genuinely unresolved / open
 
-- **No-build-tools install path** (top roadmap item): captive-portal WiFi
-  onboarding (removes `secrets.h`), GitHub Releases with a merged
-  `firmware.bin`, and an ESP Web Tools page for one-click browser flashing.
-  Neither IDE is genuinely "easy" for a non-technical user; this is the
-  answer for them. PlatformIO stays the build-from-source path.
-- WebSocket live updates: working and shipped, but off by default and still
-  proven only on one HA setup. The "unavailable" latency (HA-side, above)
-  is the main rough edge; watch free heap over long runs.
+- Browser installer: the *erase* path (fresh board -> provisioning ->
+  ESP Web Tools' own Improv Wi-Fi screen -> our `WIFI_SETTINGS` handler)
+  is built and its pieces are individually verified, but hadn't been run
+  as one chain at last check. Also: WPA3-only networks may not connect.
+- WebSocket live updates: working and shipped, off by default, proven on
+  one HA setup. The "unavailable" latency (HA-side) is the rough edge;
+  watch free heap over long runs.
 - The bulb-color picker and web-font picker are disabled pending a redesign
   without the stale-value problem the old ones had.
 - `src/main.ino` could be converted to `.cpp` (add an explicit prototype
   block) to get proper VS Code IntelliSense - not done; build is fine as-is.
 - Partition is `min_spiffs.csv` (~1.9 MB app / 190 KB FS) - app is at
-  ~68%. Changing partitions reformats LittleFS: export config first.
+  ~69%. Changing partitions reformats LittleFS: export config first.

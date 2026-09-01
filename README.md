@@ -33,23 +33,26 @@ configured from a built-in web UI — no YAML, no HA add-on.
 
 ## Install
 
-**Build from source** (PlatformIO / VS Code) — see
-[INSTRUCTIONS.md](INSTRUCTIONS.md) for the full step-by-step, including
-getting a Home Assistant long-lived access token.
+### Browser (no IDE)
+
+Open **[fatofthelan.github.io/panelette](https://fatofthelan.github.io/panelette/)**
+in Chrome / Edge / Opera on a desktop, plug the board into USB, click
+**Install**. It flashes the firmware and asks for your Wi-Fi (via
+[Improv](https://www.improv-wifi.com/), or a captive portal from the
+phone). No `secrets.h`, no compiler.
+
+### Build from source
 
 ```
 git clone https://github.com/fatofthelan/panelette.git
 cd panelette
-cp include/secrets.h.example include/secrets.h   # add your Wi-Fi
+# optional: cp include/secrets.h.example include/secrets.h  (bake in Wi-Fi)
 # open in VS Code with the PlatformIO extension, then Upload
 ```
 
-Config (pages, tiles, HA token, theme) is stored on the device's flash and
-survives firmware updates.
-
-A one-click **browser installer** (ESP Web Tools, with Wi-Fi setup over
-Improv / a captive portal — no `secrets.h`, no IDE) is in progress on the
-`feature/browser-installer` branch.
+Full step-by-step, including the Home Assistant token, in
+[INSTRUCTIONS.md](INSTRUCTIONS.md). Config (pages, tiles, HA token, theme)
+lives on the device's flash and survives firmware updates.
 
 ## Hardware
 
