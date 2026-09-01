@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install Panelette</title>
+<meta name="description" content="Flash Panelette to a Cheap Yellow Display straight from your browser.">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --bg: #0e1211; --panel: #161c1a; --panel2: #1d2523; --border: #2c3532;
+    --text: #e7ece9; --dim: #90a099; --faint: #63726b;
+    --accent: #e3a94e; --accent-ink: #0e1211; --ok: #6cc27a;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: var(--sans); line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 64px 22px 100px; }
+
+  header { text-align: center; margin-bottom: 40px; }
+  .mark {
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 14px;
+  }
+  h1 { font-size: clamp(34px, 7vw, 48px); line-height: 1.05; margin: 0 0 12px; letter-spacing: -0.02em; }
+  .tag { font-size: 18px; color: var(--dim); margin: 0 auto; max-width: 30ch; }
+
+  .installcard {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 18px;
+    padding: 30px 26px; text-align: center; margin: 0 0 14px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 16px 40px rgba(0,0,0,.35);
+  }
+  esp-web-install-button { --esp-tools-button-color: var(--accent); --esp-tools-button-text-color: var(--accent-ink); }
+  .btn {
+    display: inline-block; font-family: var(--sans); font-size: 17px; font-weight: 600;
+    background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 11px;
+    padding: 14px 30px; cursor: pointer;
+  }
+  .btn:hover { filter: brightness(1.06); }
+  .support { margin-top: 14px; font-size: 13.5px; color: var(--faint); }
+  .support a { color: var(--dim); }
+
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--dim);
+       margin: 44px 0 14px; font-weight: 600; }
+  .steps { counter-reset: s; list-style: none; padding: 0; margin: 0; }
+  .steps li {
+    counter-increment: s; position: relative; padding: 14px 0 14px 46px;
+    border-top: 1px solid var(--border); font-size: 15px;
+  }
+  .steps li:first-child { border-top: 0; }
+  .steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 12px;
+    width: 28px; height: 28px; border-radius: 8px; background: var(--panel2);
+    border: 1px solid var(--border); color: var(--accent);
+    font-family: var(--mono); font-size: 13px; display: flex; align-items: center; justify-content: center;
+  }
+  .steps b { font-weight: 600; }
+
+  .note {
+    background: var(--panel2); border: 1px solid var(--border); border-left: 3px solid var(--faint);
+    border-radius: 9px; padding: 12px 15px; font-size: 14px; color: var(--dim); margin: 14px 0;
+  }
+  .note b { color: var(--text); }
+  code {
+    font-family: var(--mono); font-size: 0.86em; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px;
+  }
+  a { color: var(--accent); }
+
+  footer {
+    margin-top: 52px; padding-top: 20px; border-top: 1px solid var(--border);
+    font-size: 13px; color: var(--faint); text-align: center;
+  }
+  footer a { color: var(--dim); }
+  footer .v { font-family: var(--mono); }
+
+  @media (max-width: 480px) { .wrap { padding: 44px 18px 80px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="mark">Panelette</p>
+    <h1>Install from your browser</h1>
+    <p class="tag">A Home Assistant touch panel for the Cheap Yellow Display &mdash; no IDE, no compiler.</p>
+  </header>
+
+  <div class="installcard">
+    <esp-web-install-button manifest="./manifest.json">
+      <button class="btn" slot="activate">Plug in &amp; Install</button>
+      <span slot="unsupported">This browser can't flash over USB. Use <b>Chrome, Edge, or Opera on a computer</b>.</span>
+      <span slot="not-allowed">Web Serial needs a secure connection &mdash; open this page over <code>https</code>.</span>
+    </esp-web-install-button>
+    <p class="support">
+      Desktop <b>Chrome / Edge / Opera</b> only (Web Serial). On a phone? See
+      "no computer?" below.
+    </p>
+  </div>
+
+  <h2>Before you start</h2>
+  <ul class="steps">
+    <li>An <b>ESP32-2432S028R</b> board &mdash; the 2.8&Prime; resistive-touch "CYD" (Cheap Yellow Display).</li>
+    <li>A <b>USB data cable</b> that fits it. Many cheap cables are charge-only and won't work.</li>
+    <li>The <b>CH340 USB-serial driver</b> if your computer doesn't see the board:
+      <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html">Windows</a> &middot;
+      <a href="https://www.wch-ic.com/downloads/CH341SER_MAC_ZIP.html">macOS</a>
+      (recent macOS has it built in).</li>
+  </ul>
+
+  <h2>What happens</h2>
+  <ul class="steps">
+    <li>Plug the board into USB and click <b>Plug in &amp; Install</b>. Pick the serial port when asked.</li>
+    <li>The firmware flashes (about a minute). The board restarts on its own.</li>
+    <li>The installer asks for your <b>Wi-Fi network and password</b> and sends them to the panel.</li>
+    <li>Done. Click <b>Visit Device</b> to open the panel's settings page and add your tiles.</li>
+  </ul>
+  <div class="note">
+    If the flash won't start, hold the <b>BOOT</b> button on the board while clicking Install,
+    then release it once it says "Connecting&hellip;".
+  </div>
+
+  <h2>No computer? (phone / Safari / Firefox)</h2>
+  <p style="font-size:15px;color:var(--dim)">
+    Flash from a desktop as above, then <b>skip</b> the Wi-Fi step in the installer.
+    The panel comes up as its own Wi-Fi network called <code>PaneletteXXXX</code> &mdash;
+    join that from your phone and a setup page appears where you enter your network.
+  </p>
+
+  <h2>After setup</h2>
+  <p style="font-size:15px;color:var(--dim)">
+    Open the panel's page (it prints its address on the <b>Status</b> screen), then connect it
+    to Home Assistant with a long-lived access token. Full walkthrough:
+    <a href="https://github.com/fatofthelan/panelette/blob/main/INSTRUCTIONS.md">INSTRUCTIONS.md</a>.
+  </p>
+
+  <footer>
+    <a href="https://github.com/fatofthelan/panelette">github.com/fatofthelan/panelette</a>
+    &nbsp;&middot;&nbsp; MIT &nbsp;&middot;&nbsp;
+    <span class="v" id="ver">&nbsp;</span><br>
+    Prefer to build it yourself? See the repo's INSTRUCTIONS.
+  </footer>
+</div>
+
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+<script>
+  fetch('./manifest.json').then(r => r.json())
+    .then(m => { document.getElementById('ver').textContent = 'v' + m.version; })
+    .catch(() => {});
+</script>
+</body>
+</html>
