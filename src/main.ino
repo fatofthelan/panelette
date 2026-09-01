@@ -94,6 +94,12 @@
 // later from the web UI and are stored in /config.json from then on.
 const char* HA_URL_DEFAULT = "http://homeassistant.local:8123";
 
+// Firmware identity. FW_VERSION is shown on the Status page, in the web UI
+// header, and reported over Improv-Serial so the browser installer can
+// tell "install" from "update".
+#define FW_NAME    "Panelette"
+#define FW_VERSION "1.0.0"
+
 // Timers-page preset buttons, in seconds: 1 / 5 / 10 / 15 / 30 min.
 const int DEFAULT_TIMER_PRESETS_SEC[5] = {60, 300, 600, 900, 1800};
 
@@ -378,7 +384,9 @@ bool compileWifiUsable() {
 }
 
 bool wifiCredsLoadFromNvs(char* ssid, size_t ssidN, char* pass, size_t passN) {
-  wifiPrefs.begin(WIFI_NVS_NAMESPACE, /*readOnly=*/true);
+  // read-write open so a first-ever read creates the namespace instead of
+  // logging nvs_open NOT_FOUND; getString() itself writes nothing.
+  wifiPrefs.begin(WIFI_NVS_NAMESPACE, /*readOnly=*/false);
   String s = wifiPrefs.getString("ssid", "");
   String p = wifiPrefs.getString("pass", "");
   wifiPrefs.end();
@@ -477,6 +485,197 @@ void startProvisioning() {
 
   provScanNetworks();
   Serial.printf("[prov] setup AP '%s' at http://%s/\n", gApSsid, apIp.toString().c_str());
+}
+
+// =========================================================
+// IMPROV-SERIAL  (hand-rolled - improv-wifi.com/serial)
+// =========================================================
+// Lets the browser installer (ESP Web Tools) read the firmware
+// name/version (to offer "update" vs "install") and hand over Wi-Fi
+// credentials right after flashing, over the same USB serial line. Runs in
+// loop() at all times; ~no cost when the host isn't talking.
+//
+// Packet: 'IMPROV' | ver(1) | type(1) | len(1) | data(len) | checksum(1)
+//   checksum = sum(all preceding bytes) & 0xFF
+// type: 1=CurrentState 2=ErrorState 3=RPC(host->dev) 4=RPCResult(dev->host)
+
+enum { IMP_TYPE_STATE = 1, IMP_TYPE_ERROR = 2, IMP_TYPE_RPC = 3, IMP_TYPE_RPC_RESULT = 4 };
+enum { IMP_STATE_READY = 2, IMP_STATE_PROVISIONING = 3, IMP_STATE_PROVISIONED = 4 };
+enum { IMP_ERR_NONE = 0, IMP_ERR_BAD_PACKET = 1, IMP_ERR_UNKNOWN_CMD = 2, IMP_ERR_CANT_CONNECT = 3 };
+enum { IMP_CMD_WIFI = 1, IMP_CMD_IDENTIFY = 2, IMP_CMD_GET_STATE = 3, IMP_CMD_GET_INFO = 4, IMP_CMD_GET_NETWORKS = 5 };
+
+uint8_t improvBuf[300];
+size_t  improvLen = 0;
+
+void improvSend(uint8_t type, const uint8_t* data, uint8_t len) {
+  uint8_t pkt[9 + 256 + 1];
+  memcpy(pkt, "IMPROV", 6);
+  pkt[6] = 1; pkt[7] = type; pkt[8] = len;
+  if (len) memcpy(pkt + 9, data, len);
+  uint32_t sum = 0;
+  for (int i = 0; i < 9 + len; i++) sum += pkt[i];
+  pkt[9 + len] = sum & 0xFF;
+  Serial.write(pkt, 9 + len + 1);
+  Serial.flush();
+}
+
+void improvSendState(uint8_t s)  { uint8_t b = s; improvSend(IMP_TYPE_STATE, &b, 1); }
+void improvSendError(uint8_t e)  { uint8_t b = e; improvSend(IMP_TYPE_ERROR, &b, 1); }
+
+// RPC result: cmdId | resultLen | (len-prefixed strings). `strs` already
+// packed as [len][bytes] repeated in `packed`.
+void improvSendResult(uint8_t cmdId, const uint8_t* packed, uint8_t packedLen) {
+  uint8_t d[2 + 256];
+  d[0] = cmdId; d[1] = packedLen;
+  if (packedLen) memcpy(d + 2, packed, packedLen);
+  improvSend(IMP_TYPE_RPC_RESULT, d, 2 + packedLen);
+}
+
+uint8_t improvPackStr(uint8_t* out, uint8_t pos, const char* s) {
+  uint8_t l = strlen(s);
+  out[pos++] = l;
+  memcpy(out + pos, s, l);
+  return pos + l;
+}
+
+uint8_t improvCurrentState() {
+  return (WiFi.status() == WL_CONNECTED) ? IMP_STATE_PROVISIONED : IMP_STATE_READY;
+}
+
+void improvSendDeviceUrl(uint8_t cmdId) {
+  String url = String("http://") + WiFi.localIP().toString();
+  uint8_t p[128];
+  uint8_t n = improvPackStr(p, 0, url.c_str());
+  improvSendResult(cmdId, p, n);
+}
+
+void improvHandleWifi(const uint8_t* cd, uint8_t cdLen) {
+  if (cdLen < 2) { improvSendError(IMP_ERR_BAD_PACKET); return; }
+  uint8_t sl = cd[0];
+  if ((size_t)1 + sl + 1 > cdLen) { improvSendError(IMP_ERR_BAD_PACKET); return; }
+  uint8_t pl = cd[1 + sl];
+  if ((size_t)2 + sl + pl > cdLen || sl > 32 || pl > 64) { improvSendError(IMP_ERR_BAD_PACKET); return; }
+
+  char ssid[33], pass[65];
+  memcpy(ssid, cd + 1, sl);        ssid[sl] = '\0';
+  memcpy(pass, cd + 2 + sl, pl);   pass[pl] = '\0';
+  Serial.printf("[improv] Wi-Fi settings for '%s'\n", ssid);
+
+  improvSendState(IMP_STATE_PROVISIONING);
+  wifiCredsSaveToNvs(ssid, pass);
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.begin(ssid, pass);
+  unsigned long t = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) delay(200);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    improvSendState(IMP_STATE_PROVISIONED);
+    improvSendDeviceUrl(IMP_CMD_WIFI);
+    Serial.println("[improv] connected - restarting into normal mode");
+    delay(500);
+    ESP.restart();
+  } else {
+    improvSendError(IMP_ERR_CANT_CONNECT);
+    Serial.println("[improv] could not connect with those credentials");
+  }
+}
+
+void improvHandleGetNetworks() {
+  int n = WiFi.scanNetworks(false, false);
+  for (int i = 0; i < n && i < 20; i++) {
+    String ssid = WiFi.SSID(i);
+    if (ssid.length() == 0) continue;
+    char rssi[8]; snprintf(rssi, sizeof(rssi), "%d", WiFi.RSSI(i));
+    bool open = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+    uint8_t p[160]; uint8_t pos = 0;
+    pos = improvPackStr(p, pos, ssid.c_str());
+    pos = improvPackStr(p, pos, rssi);
+    pos = improvPackStr(p, pos, open ? "NO" : "YES");
+    improvSendResult(IMP_CMD_GET_NETWORKS, p, pos);
+  }
+  WiFi.scanDelete();
+  improvSendResult(IMP_CMD_GET_NETWORKS, nullptr, 0); // end marker
+}
+
+void improvHandleRpc(const uint8_t* data, uint8_t dataLen) {
+  if (dataLen < 2) { improvSendError(IMP_ERR_BAD_PACKET); return; }
+  uint8_t cmd = data[0];
+  uint8_t cdLen = data[1];
+  if ((size_t)2 + cdLen > dataLen) { improvSendError(IMP_ERR_BAD_PACKET); return; }
+  const uint8_t* cd = data + 2;
+
+  switch (cmd) {
+    case IMP_CMD_GET_STATE:
+      improvSendState(improvCurrentState());
+      if (WiFi.status() == WL_CONNECTED) improvSendDeviceUrl(IMP_CMD_GET_STATE);
+      break;
+    case IMP_CMD_GET_INFO: {
+      uint8_t p[160]; uint8_t pos = 0;
+      pos = improvPackStr(p, pos, FW_NAME);
+      pos = improvPackStr(p, pos, FW_VERSION);
+      pos = improvPackStr(p, pos, "ESP32");
+      pos = improvPackStr(p, pos, cfg.deviceName);
+      improvSendResult(IMP_CMD_GET_INFO, p, pos);
+      break;
+    }
+    case IMP_CMD_GET_NETWORKS:
+      improvHandleGetNetworks();
+      break;
+    case IMP_CMD_WIFI:
+      improvHandleWifi(cd, cdLen);
+      break;
+    case IMP_CMD_IDENTIFY:
+      tft.fillScreen(COL_ACCENT);
+      delay(600);
+      if (gProvisioning) gProvScreenDrawn = false; // handleProvisioning redraws
+      else               drawCurrentPageFull();
+      break;
+    default:
+      improvSendError(IMP_ERR_UNKNOWN_CMD);
+      break;
+  }
+}
+
+void improvHandlePacket(const uint8_t* pkt, size_t total) {
+  if (pkt[6] != 1) return;
+  uint32_t sum = 0;
+  for (size_t i = 0; i < total - 1; i++) sum += pkt[i];
+  if ((sum & 0xFF) != pkt[total - 1]) { improvSendError(IMP_ERR_BAD_PACKET); return; }
+
+  uint8_t type = pkt[7];
+  uint8_t len  = pkt[8];
+  if (type == IMP_TYPE_RPC) improvHandleRpc(pkt + 9, len);
+  // other inbound types (state/error/result) are host->device only for RPC;
+  // nothing to do.
+}
+
+// Called every loop(). Scans the serial stream for IMPROV packets.
+void improvLoop() {
+  while (Serial.available()) {
+    uint8_t b = Serial.read();
+
+    if (improvLen < 6) { // syncing on the "IMPROV" header
+      const char* H = "IMPROV";
+      if (b == (uint8_t)H[improvLen]) {
+        improvBuf[improvLen++] = b;
+      } else {
+        improvLen = (b == 'I') ? 1 : 0;
+        if (improvLen) improvBuf[0] = 'I';
+      }
+      continue;
+    }
+
+    improvBuf[improvLen++] = b;
+    if (improvLen >= 9) {
+      size_t total = 9 + (size_t)improvBuf[8] + 1; // header+data+checksum
+      if (improvLen >= total) {
+        improvHandlePacket(improvBuf, total);
+        improvLen = 0;
+      }
+    }
+    if (improvLen >= sizeof(improvBuf)) improvLen = 0; // runaway guard
+  }
 }
 
 void applyTimezone() {
@@ -4935,7 +5134,7 @@ void setupWebServer() {
 void setup() {
   Serial.begin(115200);
   delay(150);
-  Serial.printf("\n=== Panelette  build %s %s ===\n", __DATE__, __TIME__);
+  Serial.printf("\n=== %s %s  (build %s %s) ===\n", FW_NAME, FW_VERSION, __DATE__, __TIME__);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
   analogWrite(BACKLIGHT_PIN, 255);
@@ -5078,6 +5277,8 @@ void handleProvisioning() {
 }
 
 void loop() {
+  improvLoop(); // browser-installer serial handshake - runs in every mode
+
   if (gProvisioning) { handleProvisioning(); return; }
 
   server.handleClient();
