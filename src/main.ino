@@ -59,6 +59,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
+#include <DNSServer.h> // captive-portal DNS during Wi-Fi provisioning
 #include <ESPmDNS.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -425,6 +426,57 @@ WifiCredSource wifiResolveCreds() {
   gWifiSsid[0] = gWifiPass[0] = '\0';
   gWifiCredSource = WCS_NONE;
   return gWifiCredSource;
+}
+
+// =========================================================
+// WI-FI PROVISIONING  (on-device setup when there are no working creds)
+// =========================================================
+// Entered from setup() when wifiResolveCreds() came up empty or the
+// resolved credentials wouldn't connect. The panel runs as its own open
+// Wi-Fi AP ("PaneletteXXXX") with a captive portal; the user picks their
+// network and enters the password, we save it to NVS and reboot. If
+// credentials *do* exist (they just failed at boot - router was down,
+// etc.) we also keep retrying them in the background.
+//
+// The setup page is deliberately tiny - Wi-Fi only. The full config UI is
+// not served until the panel is actually online.
+
+DNSServer dnsServer;
+bool gProvisioning = false;
+char gApSsid[24] = "";
+String gProvScanHtml = "<option>(scanning...)</option>"; // <option> list for the SSID picker
+unsigned long gProvRetryMs = 0;
+bool gProvScreenDrawn = false;
+
+// Rebuild the cached SSID <option> list. Blocking (~2-4 s); only called
+// from the provisioning path where nothing else is time-critical.
+void provScanNetworks() {
+  int n = WiFi.scanNetworks(false, false);
+  String html;
+  for (int i = 0; i < n && i < 20; i++) {
+    String s = WiFi.SSID(i);
+    if (s.length() == 0) continue;
+    if (html.indexOf(">" + s + "<") >= 0) continue; // dedupe (mesh)
+    html += "<option>" + s + "</option>";
+  }
+  WiFi.scanDelete();
+  gProvScanHtml = html.length() ? html : String("<option>(no networks found)</option>");
+}
+
+void startProvisioning() {
+  gProvisioning = true;
+  gProvScreenDrawn = false;
+  if (gApSsid[0] == '\0') makeDefaultDeviceName(gApSsid, sizeof(gApSsid)); // "PaneletteXXXX"
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(gApSsid); // open network - conventional for setup APs
+  delay(150);
+  IPAddress apIp = WiFi.softAPIP();               // 192.168.4.1
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(53, "*", apIp);                 // every lookup -> the panel
+
+  provScanNetworks();
+  Serial.printf("[prov] setup AP '%s' at http://%s/\n", gApSsid, apIp.toString().c_str());
 }
 
 void applyTimezone() {
@@ -2967,6 +3019,35 @@ void updateGridTiles(bool force) {
   }
 }
 
+// Full-screen "join my Wi-Fi to set me up" card, shown while gProvisioning.
+void drawProvisioningScreen(bool retrying) {
+  tft.fillScreen(COL_BG);
+  int cx = SCREEN_W / 2;
+
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(COL_DIM, COL_BG);
+  uiDrawString(tft, "WI-FI SETUP", cx, 40, 1);
+
+  tft.setTextColor(COL_TEXT, COL_BG);
+  uiDrawFitted(tft, "Join this network", cx, 78, SCREEN_W - 24, 2, false);
+
+  uiFillRR(tft, 16, 108, SCREEN_W - 32, 52, gCardRadius, COL_PANEL, COL_BG);
+  if (showTileBorder) uiStrokeRR(tft, 16, 108, SCREEN_W - 32, 52, gCardRadius, COL_ACCENT, COL_PANEL);
+  tft.setTextColor(COL_ACCENT, COL_PANEL);
+  uiDrawFitted(tft, gApSsid, cx, 122, SCREEN_W - 44, 4, true);
+
+  tft.setTextColor(COL_DIM, COL_BG);
+  uiDrawFitted(tft, "then follow the page", cx, 178, SCREEN_W - 24, 2, false);
+  uiDrawFitted(tft, "that pops up", cx, 200, SCREEN_W - 24, 2, false);
+  uiDrawFitted(tft, "(or open 192.168.4.1)", cx, 228, SCREEN_W - 24, 1, false);
+
+  if (retrying) {
+    tft.setTextColor(COL_DIM, COL_BG);
+    uiDrawFitted(tft, "retrying saved network...", cx, 264, SCREEN_W - 24, 1, false);
+  }
+  tft.setTextDatum(TL_DATUM);
+}
+
 void drawCurrentPageFull() {
   PageConfig& pg = cfg.pages[currentPageIndex];
   drawHeader(true);
@@ -4745,7 +4826,79 @@ void handleExport() {
   server.send(200, "application/json", json);
 }
 
+// ---- Wi-Fi provisioning portal (only wired up while gProvisioning) ------
+
+String provPageHtml(const String& body) {
+  return "<!doctype html><html><head><meta charset='utf-8'>"
+         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+         "<title>Panelette Wi-Fi setup</title><style>"
+         "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0e1211;"
+         "color:#e7ece9;margin:0;padding:28px 20px;line-height:1.5}"
+         ".c{max-width:380px;margin:0 auto}"
+         "h1{font-size:22px;margin:0 0 4px}.d{color:#90a099;font-size:14px;margin:0 0 20px}"
+         "label{display:block;font-size:13px;color:#90a099;margin:14px 0 4px}"
+         "input,select{width:100%;box-sizing:border-box;padding:11px 12px;font-size:15px;border-radius:9px;"
+         "border:1px solid #2c3532;background:#1d2523;color:#e7ece9}"
+         "button{width:100%;margin-top:20px;padding:12px;font-size:15px;font-weight:600;border:0;"
+         "border-radius:9px;background:#e3a94e;color:#0e1211;cursor:pointer}"
+         "a{color:#e3a94e}.n{background:#1d2523;border:1px solid #2c3532;border-radius:9px;"
+         "padding:12px 14px;font-size:14px;margin-top:16px}</style></head><body><div class='c'>" +
+         body + "</div></body></html>";
+}
+
+void handleProvRoot() {
+  String b = "<h1>Panelette</h1><p class='d'>Connect the panel to your Wi-Fi.</p>";
+  b += "<form method='POST' action='/wifi/save'>";
+  b += "<label>Network</label>";
+  b += "<input name='ssid' list='nets' autocomplete='off' placeholder='network name' required>";
+  b += "<datalist id='nets'>" + gProvScanHtml + "</datalist>";
+  b += "<label>Password <span style='color:#63726b'>(leave blank if open)</span></label>";
+  b += "<input name='pass' type='password' autocomplete='off'>";
+  b += "<button type='submit'>Save &amp; connect</button></form>";
+  b += "<div class='n'>Don't see your network? <a href='/wifi/scan'>Rescan</a></div>";
+  server.send(200, "text/html", provPageHtml(b));
+}
+
+void handleProvScan() {
+  provScanNetworks();
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handleProvSave() {
+  String ssid = server.arg("ssid"); ssid.trim();
+  String pass = server.arg("pass");
+  if (ssid.length() == 0 || ssid.length() > 32) {
+    server.send(400, "text/html", provPageHtml("<h1>Panelette</h1><p>Please enter a network name. <a href='/'>Back</a></p>"));
+    return;
+  }
+  wifiCredsSaveToNvs(ssid.c_str(), pass.c_str());
+  Serial.printf("[prov] saved network '%s' - restarting\n", ssid.c_str());
+
+  String b = "<h1>Saved</h1><p class='d'>The panel is restarting and will join <b>" + ssid + "</b>.</p>";
+  b += "<div class='n'>If it can't connect, it comes back as its own <b>" + String(gApSsid) +
+       "</b> network &mdash; reconnect to that and try again.</div>";
+  server.send(200, "text/html", provPageHtml(b));
+  delay(700); // flush the response
+  ESP.restart();
+}
+
+// Anything else (incl. the OS captive-portal probe URLs) -> the setup page.
+void handleProvCaptive() {
+  server.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/");
+  server.send(302, "text/plain", "");
+}
+
 void setupWebServer() {
+  if (gProvisioning) {
+    server.on("/", handleProvRoot);
+    server.on("/wifi/save", HTTP_POST, handleProvSave);
+    server.on("/wifi/scan", handleProvScan);
+    server.onNotFound(handleProvCaptive);
+    server.begin();
+    return;
+  }
+
   server.on("/", handleRoot);
   server.on("/ha-test", handleHaTest);
   server.on("/page", handlePageManage);
@@ -4821,25 +4974,27 @@ void setup() {
                 cs == WCS_COMPILE ? "from secrets.h" :
                 cs == WCS_STORED  ? "from device storage" : "NONE (setup needed)");
 
-  WiFi.begin(gWifiSsid, gWifiPass);
-  unsigned long wifiStart = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
-    delay(250);
-  }
-
-  // Safety net: a bad static IP (right format, wrong for this LAN) would
-  // otherwise lock the user out. Retry once on DHCP so the web UI stays
-  // reachable; the stored config is left as-is.
-  if (WiFi.status() != WL_CONNECTED && cfg.useStaticIp) {
-    Serial.println("Static IP failed to connect - falling back to DHCP for this session.");
-    staticIpFellBack = true;
-    WiFi.config((uint32_t)0, (uint32_t)0, (uint32_t)0);
-    WiFi.disconnect();
-    delay(100);
+  if (cs != WCS_NONE) {
     WiFi.begin(gWifiSsid, gWifiPass);
-    wifiStart = millis();
+    unsigned long wifiStart = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
       delay(250);
+    }
+
+    // Safety net: a bad static IP (right format, wrong for this LAN) would
+    // otherwise lock the user out. Retry once on DHCP so the web UI stays
+    // reachable; the stored config is left as-is.
+    if (WiFi.status() != WL_CONNECTED && cfg.useStaticIp) {
+      Serial.println("Static IP failed to connect - falling back to DHCP for this session.");
+      staticIpFellBack = true;
+      WiFi.config((uint32_t)0, (uint32_t)0, (uint32_t)0);
+      WiFi.disconnect();
+      delay(100);
+      WiFi.begin(gWifiSsid, gWifiPass);
+      wifiStart = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
+        delay(250);
+      }
     }
   }
 
@@ -4874,7 +5029,8 @@ void setup() {
       }
     }
   } else {
-    Serial.println("Wi-Fi connection failed. (On-device setup mode comes in a later build step.)");
+    Serial.println("Not connected - entering Wi-Fi setup mode.");
+    startProvisioning();
   }
 
   setupWebServer();
@@ -4894,7 +5050,36 @@ void flushPendingHaCommand() {
   else if (k == PHA_BRIGHTNESS) haSendBrightness(pendingHaEntity, pendingHaPct);
 }
 
+// Whole-loop replacement while gProvisioning: serve the captive portal,
+// keep the setup screen up, and (if we have credentials that failed at
+// boot) periodically retry them, rebooting into normal mode on success.
+void handleProvisioning() {
+  server.handleClient();
+  dnsServer.processNextRequest();
+
+  if (!gProvScreenDrawn) {
+    drawProvisioningScreen(gWifiCredSource != WCS_NONE);
+    gProvScreenDrawn = true;
+  }
+
+  if (gWifiCredSource != WCS_NONE && WiFi.softAPgetStationNum() == 0 &&
+      millis() - gProvRetryMs > 60000) {
+    gProvRetryMs = millis();
+    Serial.println("[prov] retrying stored Wi-Fi...");
+    WiFi.begin(gWifiSsid, gWifiPass);
+    unsigned long t = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t < 12000) delay(200);
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("[prov] connected - restarting into normal mode");
+      delay(300);
+      ESP.restart();
+    }
+  }
+}
+
 void loop() {
+  if (gProvisioning) { handleProvisioning(); return; }
+
   server.handleClient();
   updateTimerState();
   updateFlashSequence();
