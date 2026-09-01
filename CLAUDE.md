@@ -1,7 +1,9 @@
-# HA Panel - Project Context
+# Panelette - Project Context
 
-Custom Home Assistant touch-panel firmware for the ESP32-2432S028R ("CYD" -
-Cheap Yellow Display), a 2.8" 240x320 TFT + resistive touchscreen board.
+**Panelette** - custom Home Assistant touch-panel firmware for the
+ESP32-2432S028R ("CYD" - Cheap Yellow Display), a 2.8" 240x320 TFT +
+resistive touchscreen board. (Renamed from "HA Panel" - too generic and
+too close to openHASP.)
 Built from scratch (not based on any third-party sketch) using TFT_eSPI +
 XPT2046_Touchscreen. Developed originally in the Arduino IDE, migrated to
 PlatformIO / VS Code on 2026-08-30.
@@ -255,9 +257,9 @@ they render jagged.
 - Settings persist as `/config.json` on LittleFS (not the NVS `Preferences`
   API) - needed because the page/tile lists are variable-length.
 - Import/export both exist in the web UI. Export filename is
-  `hapanel-<devicename>-<m.d.yyyy>.json` (falls back to `0.0.0` for the date
+  `panelette-<devicename>-<m.d.yyyy>.json` (falls back to `0.0.0` for the date
   if NTP has not synced yet).
-- Default device name is `HAPanel` + last 4 hex of the efuse MAC
+- Default device name is `Panelette` + last 4 hex of the efuse MAC
   (`makeDefaultDeviceName()`), so fresh panels don't collide on `.local`.
   The name is run through `sanitizeHostname()` (alnum + hyphens) on save.
 - `weatherLocationAuto` was **removed** - location is imported from HA's

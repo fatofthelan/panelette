@@ -1,7 +1,8 @@
-# HA Panel - Installation Guide
+# Panelette - Installation Guide
 
-A multi-page Home Assistant touch control panel for the **ESP32-2432S028R**
-("CYD" - Cheap Yellow Display), a ~$15 2.8" 240x320 touchscreen board.
+**Panelette** is a multi-page Home Assistant touch control panel for the
+**ESP32-2432S028R** ("CYD" - Cheap Yellow Display), a ~$15 2.8" 240x320
+touchscreen board.
 
 Tap to toggle lights and switches, press-and-drag on a light to dim it,
 swipe between pages, see a live weather forecast, and run kitchen-style
@@ -19,8 +20,8 @@ timers that can flash your lights when they finish.
   the board doesn't show up as a serial port, try another cable first.
 - A computer (Windows, macOS, or Linux) for the one-time flashing step.
 
-A fresh panel names itself `HAPanelXXXX` (the last 4 hex digits of its MAC),
-so two panels on one network won't clash. You can rename it in the web UI.
+A fresh unit names itself `PaneletteXXXX` (the last 4 hex digits of its MAC),
+so two on one network won't clash. You can rename it in the web UI.
 
 ### Software (installed once, on your computer)
 - **Visual Studio Code** - https://code.visualstudio.com
@@ -54,8 +55,8 @@ so two panels on one network won't clash. You can rename it in the web UI.
 
 **If you have `git`:**
 ```
-git clone <REPO-URL> ha-panel
-cd ha-panel
+git clone <REPO-URL> panelette
+cd panelette
 ```
 
 **If you don't:** on the project's GitHub page, click **Code -> Download ZIP**,
@@ -71,7 +72,7 @@ then unzip it somewhere permanent (not your Downloads folder).
 3. Search for **PlatformIO IDE**, click **Install**. Wait for it to finish
    (it downloads a toolchain in the background - this can take a few minutes
    the first time). Reload VS Code if it asks.
-4. **File -> Open Folder** and choose the `ha-panel` folder from Step 1.
+4. **File -> Open Folder** and choose the `panelette` folder from Step 1.
    PlatformIO will detect the project and do more first-time setup - give it
    a minute until the bottom status bar stops showing activity.
 
@@ -103,7 +104,7 @@ later push changes.
 
 ## Step 4 - (Optional) set the default HA address
 
-The panel names itself `HAPanelXXXX` automatically and you can rename it (and
+The panel names itself `PaneletteXXXX` automatically and you can rename it (and
 set the HA URL) from the web UI after first boot, so this step is optional.
 
 To pre-set the Home Assistant address, open **`src/main.ino`** and edit:
@@ -140,13 +141,13 @@ The panel needs no further USB connection - it's now on Wi-Fi.
 - On the panel, swipe left/right to the **Status** page. It shows:
   - **WiFi:** Connected / Disconnected
   - **IP:** e.g. `192.168.1.73`
-  - **Host:** the panel's name, e.g. `HAPanelA1B2.local`
+  - **Host:** the panel's name, e.g. `PaneletteA1B2.local`
 - On your computer/phone browser (same network), open `http://<that host>`
-  (e.g. `http://HAPanelA1B2.local`)
+  (e.g. `http://PaneletteA1B2.local`)
   - If your device or router doesn't resolve `.local` names, use the IP from
     the Status page instead: `http://192.168.1.73`
 
-You should see the **HA Panel Settings** page.
+You should see the **Panelette Settings** page.
 
 ---
 
@@ -157,7 +158,7 @@ You should see the **HA Panel Settings** page.
 2. Open the **Security** tab (older HA: scroll to the bottom of the profile
    page).
 3. Under **Long-Lived Access Tokens**, click **Create Token**.
-4. Name it something like `HA Panel` and click OK.
+4. Name it something like `Panelette` and click OK.
 5. **Copy the token now** - HA shows it only once. It's a long string of
    letters and numbers.
 
@@ -267,7 +268,7 @@ Your pages, tiles and HA token are stored on the panel's flash filesystem and
 
 ### Backup / move your setup
 On the web page's **Backup & Restore** section, use **Back up** to download
-a `hapanel-<name>-<date>.json` file. Flip it to **Restore** to upload that
+a `panelette-<name>-<date>.json` file. Flip it to **Restore** to upload that
 file back (on this panel, or another one you want to clone the setup to) -
 the panel reboots afterward.
 

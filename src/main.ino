@@ -1,5 +1,5 @@
 // =========================================================
-// HA Panel
+// Panelette
 // Multi-page HA touch control panel for the CYD (ESP32-2432S028R)
 //
 // Implemented:
@@ -88,13 +88,13 @@ const char* HA_URL_DEFAULT = "http://homeassistant.local:8123";
 // Timers-page preset buttons, in seconds: 1 / 5 / 10 / 15 / 30 min.
 const int DEFAULT_TIMER_PRESETS_SEC[5] = {60, 300, 600, 900, 1800};
 
-// Default device / hostname: "HAPanel" + the last 4 hex digits of the MAC,
+// Default device / hostname: "Panelette" + the last 4 hex digits of the MAC,
 // so two fresh panels on the same network don't collide. Falls back to a
 // random 4-hex suffix if the efuse MAC reads back as zero.
 void makeDefaultDeviceName(char* out, size_t n) {
   uint16_t suffix = (uint16_t)((ESP.getEfuseMac() >> 32) & 0xFFFF);
   if (suffix == 0) suffix = (uint16_t)(esp_random() & 0xFFFF);
-  snprintf(out, n, "HAPanel%04X", suffix);
+  snprintf(out, n, "Panelette%04X", suffix);
 }
 
 // Keep only characters valid in a hostname / mDNS name; spaces and
@@ -3536,8 +3536,8 @@ String sortableScript() {
 }
 
 void handleRoot() {
-  String h = pageHeaderHtml("HA Panel Settings");
-  h += "<h1>HA PANEL <span class='dim'>&mdash; " + htmlEscape(cfg.deviceName) + "</span></h1>";
+  String h = pageHeaderHtml("Panelette Settings");
+  h += "<h1>PANELETTE <span class='dim'>&mdash; " + htmlEscape(cfg.deviceName) + "</span></h1>";
 
   if (gSaveNotice.length() > 0) {
     h += "<div class='notice'>" + htmlEscape(gSaveNotice) + "</div>";
@@ -4624,7 +4624,7 @@ void handleImportComplete() {
     h += "<meta http-equiv='refresh' content='6;url=/'>";
   } else {
     h += "<h1>Import failed</h1>";
-    h += "<p>That file didn't look like a valid HA Panel config export. Nothing was changed.</p>";
+    h += "<p>That file didn't look like a valid Panelette config export. Nothing was changed.</p>";
     h += "<p><a href='/'>&larr; Back to settings</a></p>";
   }
   h += htmlFooter;
@@ -4652,7 +4652,7 @@ void handleExport() {
   String devicePart(cfg.deviceName);
   devicePart.toLowerCase();
 
-  String filename = "hapanel-" + devicePart + "-" + dateStr + ".json";
+  String filename = "panelette-" + devicePart + "-" + dateStr + ".json";
 
   server.sendHeader("Content-Disposition", "attachment; filename=" + filename);
   server.send(200, "application/json", json);
@@ -4695,7 +4695,7 @@ void setupWebServer() {
 void setup() {
   Serial.begin(115200);
   delay(150);
-  Serial.printf("\n=== HA Panel  build %s %s ===\n", __DATE__, __TIME__);
+  Serial.printf("\n=== Panelette  build %s %s ===\n", __DATE__, __TIME__);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
   analogWrite(BACKLIGHT_PIN, 255);
