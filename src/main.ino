@@ -506,6 +506,8 @@ enum { IMP_CMD_WIFI = 1, IMP_CMD_IDENTIFY = 2, IMP_CMD_GET_STATE = 3, IMP_CMD_GE
 
 uint8_t improvBuf[300];
 size_t  improvLen = 0;
+bool    improvHostSeen = false;      // a host has sent us a valid packet
+unsigned long improvAnnounceMs = 0;  // last unprompted CURRENT_STATE
 
 void improvSend(uint8_t type, const uint8_t* data, uint8_t len) {
   uint8_t pkt[9 + 256 + 1];
@@ -655,6 +657,7 @@ void improvHandlePacket(const uint8_t* pkt, size_t total) {
   for (size_t i = 0; i < total - 1; i++) sum += pkt[i];
   if ((sum & 0xFF) != pkt[total - 1]) { improvSendError(IMP_ERR_BAD_PACKET); return; }
 
+  improvHostSeen = true; // a real host is talking - stop the boot announce
   uint8_t type = pkt[7];
   uint8_t len  = pkt[8];
   if (type == IMP_TYPE_RPC) improvHandleRpc(pkt + 9, len);
@@ -662,8 +665,17 @@ void improvHandlePacket(const uint8_t* pkt, size_t total) {
   // nothing to do.
 }
 
-// Called every loop(). Scans the serial stream for IMPROV packets.
+// Called every loop(). Scans the serial stream for IMPROV packets, and for
+// the first stretch after boot announces CURRENT_STATE unprompted (~1.5 s) -
+// ESP Web Tools sends a single GET_CURRENT_STATE with a ~1 s timeout right
+// after opening the port, which resets the ESP32, so that probe is usually
+// lost. Any CURRENT_STATE packet resolves the installer's wait.
 void improvLoop() {
+  if (!improvHostSeen && millis() < 20000 && millis() - improvAnnounceMs >= 1500) {
+    improvAnnounceMs = millis();
+    improvSendState(improvCurrentState());
+  }
+
   while (Serial.available()) {
     uint8_t b = Serial.read();
 
