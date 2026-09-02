@@ -510,14 +510,17 @@ bool    improvHostSeen = false;      // a host has sent us a valid packet
 unsigned long improvAnnounceMs = 0;  // last unprompted CURRENT_STATE
 
 void improvSend(uint8_t type, const uint8_t* data, uint8_t len) {
-  uint8_t pkt[9 + 256 + 1];
+  uint8_t pkt[9 + 256 + 2];
   memcpy(pkt, "IMPROV", 6);
   pkt[6] = 1; pkt[7] = type; pkt[8] = len;
   if (len) memcpy(pkt + 9, data, len);
   uint32_t sum = 0;
   for (int i = 0; i < 9 + len; i++) sum += pkt[i];
   pkt[9 + len] = sum & 0xFF;
-  Serial.write(pkt, 9 + len + 1);
+  pkt[9 + len + 1] = '\n';  // every Improv-Serial frame is newline-terminated;
+                            // ESP Web Tools' reader is line-oriented and won't
+                            // detect us without it (matches ESPHome's impl)
+  Serial.write(pkt, 9 + len + 2);
   Serial.flush();
 }
 
