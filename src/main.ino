@@ -502,7 +502,11 @@ void startProvisioning() {
 enum { IMP_TYPE_STATE = 1, IMP_TYPE_ERROR = 2, IMP_TYPE_RPC = 3, IMP_TYPE_RPC_RESULT = 4 };
 enum { IMP_STATE_READY = 2, IMP_STATE_PROVISIONING = 3, IMP_STATE_PROVISIONED = 4 };
 enum { IMP_ERR_NONE = 0, IMP_ERR_BAD_PACKET = 1, IMP_ERR_UNKNOWN_CMD = 2, IMP_ERR_CANT_CONNECT = 3 };
-enum { IMP_CMD_WIFI = 1, IMP_CMD_IDENTIFY = 2, IMP_CMD_GET_STATE = 3, IMP_CMD_GET_INFO = 4, IMP_CMD_GET_NETWORKS = 5 };
+// Improv RPC command IDs - MUST match the spec (improv-wifi.com/serial):
+// 0x02 is GET_CURRENT_STATE over serial (IDENTIFY 0x02 is BLE-only). Getting
+// these wrong makes ESP Web Tools' requestInfo() hang and drop the client, so
+// it never shows the Wi-Fi options.
+enum { IMP_CMD_WIFI = 1, IMP_CMD_GET_STATE = 2, IMP_CMD_GET_INFO = 3, IMP_CMD_GET_NETWORKS = 4 };
 
 uint8_t improvBuf[300];
 size_t  improvLen = 0;
@@ -641,12 +645,6 @@ void improvHandleRpc(const uint8_t* data, uint8_t dataLen) {
       break;
     case IMP_CMD_WIFI:
       improvHandleWifi(cd, cdLen);
-      break;
-    case IMP_CMD_IDENTIFY:
-      tft.fillScreen(COL_ACCENT);
-      delay(600);
-      if (gProvisioning) gProvScreenDrawn = false; // handleProvisioning redraws
-      else               drawCurrentPageFull();
       break;
     default:
       improvSendError(IMP_ERR_UNKNOWN_CMD);
@@ -5216,20 +5214,28 @@ void setupWebServer() {
 // =========================================================
 void setup() {
   Serial.begin(115200);
-  delay(80);
+
+  // ESP Web Tools' PRE-install Improv probe gives up 1.5 s after it opens the
+  // port (which reset us) - the ROM bootloader already ate part of that. Get
+  // unprompted CURRENT_STATE frames out immediately, before the slow display /
+  // filesystem init; the installer's reader resolves on any CURRENT_STATE.
+  delay(20);
+  for (int i = 0; i < 6; i++) { improvSendState(IMP_STATE_READY); improvLoop(); delay(20); }
+
   Serial.printf("\n=== %s %s  (build %s %s) ===\n", FW_NAME, FW_VERSION, __DATE__, __TIME__);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
   analogWrite(BACKLIGHT_PIN, 255);
+
+  for (int i = 0; i < 6; i++) { improvSendState(IMP_STATE_READY); improvLoop(); delay(20); }
+
   tft.init();
   tft.setRotation(2);
   tft.fillScreen(fixColor565(TFT_BLACK)); // display renders every colour inverted - see fixColor565
 
-  // ESP Web Tools probes for Improv within ~1 s of opening the port (which
-  // resets us) and does not retry - so blast CURRENT_STATE for the first
-  // ~2 s, before the slow filesystem / font init, so one lands in its
-  // detect window. improvLoop() keeps a slower announce going after this.
-  for (int i = 0; i < 14; i++) { improvSendState(IMP_STATE_READY); improvLoop(); delay(150); }
+  // Keep announcing through early init (covers a probe that opened the port
+  // late); improvLoop() keeps a slower announce going for ~20 s after boot.
+  for (int i = 0; i < 12; i++) { improvSendState(IMP_STATE_READY); improvLoop(); delay(120); }
 
   // tft.invertDisplay(true) was tried here but had no measurable effect -
   // your photos still show accent-colored elements (footer dot, "on" tile
