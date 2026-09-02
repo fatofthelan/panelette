@@ -287,13 +287,33 @@ they render jagged.
 ## Improv-Serial (`improvLoop()`, runs every loop, all modes)
 
 - Hand-rolled, ~250 lines, no dependency. Spec: improv-wifi.com/serial.
-- Packet: `IMPROV | ver(1) | type(1) | len(1) | data | checksum(1)`. Parsing
-  is bounds-checked against `len` (untrusted USB input).
+- Packet: `IMPROV | ver(1) | type(1) | len(1) | data | checksum(1) | \n`.
+  Parsing is bounds-checked against `len` (untrusted USB input).
+- **Every TX frame ends with `\n`.** ESP Web Tools' serial reader is
+  line-oriented (resets its buffer on 0x0A, then looks for the `IMPROV`
+  magic); without the terminator it never re-syncs past ESP32 boot-log
+  noise and Improv is never detected. `improvSend()` appends it.
+- **RPC command IDs must match the spec exactly**: `WIFI_SETTINGS=1`,
+  `GET_CURRENT_STATE=2`, `GET_DEVICE_INFO=3`, `GET_WIFI_NETWORKS=4`. (There
+  is no serial `IDENTIFY` - 0x02 is `IDENTIFY` only in Improv-BLE.) An
+  earlier off-by-one here (`IDENTIFY=2`/`GET_STATE=3`/`GET_INFO=4`) made
+  `initialize()`'s device-info request hang, so ESP Web Tools dropped the
+  Improv client and showed only Install / Logs.
 - Handles `GET_DEVICE_INFO` (`FW_NAME` / `FW_VERSION` / `"ESP32"` / device
   name - this is what lets ESP Web Tools offer *update* vs *install*),
   `GET_CURRENT_STATE` (+ `http://<ip>` when connected), `GET_WIFI_NETWORKS`
   (streamed scan + empty end marker), `WIFI_SETTINGS` (save/connect/reboot,
-  or Error), `IDENTIFY` (screen flash).
+  or Error).
+- `setup()` fires an unprompted `CURRENT_STATE` burst *before* `tft.init()`
+  - ESP Web Tools' pre-install probe only waits ~1.5 s from opening the
+    port (which reset us). `improvLoop()` keeps a slower announce going for
+    ~20 s after boot; any `CURRENT_STATE` frame satisfies the installer.
+- **`gImprovProvRtc` (`RTC_NOINIT_ATTR`, survives `ESP.restart()`)**: set on
+  a successful `WIFI_SETTINGS` save so the reboot that applies the creds
+  stays silent (no `READY` announce) until Wi-Fi reassociates, then sends
+  one `PROVISIONED`. Otherwise a still-open ESP Web Tools dialog reads the
+  post-reboot `READY` as a failed provision and re-shows the form. Must be
+  `RTC_NOINIT_ATTR` - `RTC_DATA_ATTR` is zeroed on every boot.
 - `FW_NAME` / `FW_VERSION` `#define`s near the top of main.ino - also the
   serial banner, the Status-page footer, and the web-UI header.
 
@@ -452,10 +472,12 @@ they render jagged.
 
 ## What's genuinely unresolved / open
 
-- Browser installer: the *erase* path (fresh board -> provisioning ->
-  ESP Web Tools' own Improv Wi-Fi screen -> our `WIFI_SETTINGS` handler)
-  is built and its pieces are individually verified, but hadn't been run
-  as one chain at last check. Also: WPA3-only networks may not connect.
+- Browser installer: the ESP Web Tools "Change Wi-Fi" / Improv flow
+  (detect -> device info -> scan -> `WIFI_SETTINGS` -> connect -> reboot ->
+  dialog shows connected) is now verified end-to-end on hardware against a
+  `secrets.h` build. Still unverified: the full *erase* path from a blank
+  board (fresh flash -> provisioning SoftAP -> ESP Web Tools Improv screen)
+  as one chain, and WPA3-only networks.
 - WebSocket live updates: working and shipped, off by default, proven on
   one HA setup. The "unavailable" latency (HA-side) is the rough edge;
   watch free heap over long runs.
