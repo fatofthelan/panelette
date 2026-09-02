@@ -5213,14 +5213,21 @@ void setupWebServer() {
 // =========================================================
 void setup() {
   Serial.begin(115200);
-  delay(150);
+  delay(80);
   Serial.printf("\n=== %s %s  (build %s %s) ===\n", FW_NAME, FW_VERSION, __DATE__, __TIME__);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
   analogWrite(BACKLIGHT_PIN, 255);
-
   tft.init();
   tft.setRotation(2);
+  tft.fillScreen(fixColor565(TFT_BLACK)); // display renders every colour inverted - see fixColor565
+
+  // ESP Web Tools probes for Improv within ~1 s of opening the port (which
+  // resets us) and does not retry - so blast CURRENT_STATE for the first
+  // ~2 s, before the slow filesystem / font init, so one lands in its
+  // detect window. improvLoop() keeps a slower announce going after this.
+  for (int i = 0; i < 14; i++) { improvSendState(IMP_STATE_READY); improvLoop(); delay(150); }
+
   // tft.invertDisplay(true) was tried here but had no measurable effect -
   // your photos still show accent-colored elements (footer dot, "on" tile
   // background) as orange when blue was intended, exactly matching the
@@ -5235,12 +5242,14 @@ void setup() {
   if (!LittleFS.begin(true)) {
     Serial.println("LittleFS mount failed");
   }
+  improvLoop();
   if (!loadConfig()) {
     setDefaultConfig();
     saveConfig();
   }
   applyScreenRotation(); // now that cfg.flipScreen is known
   applyTypeface();       // load the .vlw font (sans / mono)
+  improvLoop();
   applyCornerStyle();
   applyTheme(cfg.darkTheme);
   applyTimezone();
