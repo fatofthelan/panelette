@@ -690,6 +690,13 @@ void improvLoop() {
   }
 }
 
+// delay() that keeps answering Improv - used in setup()'s blocking waits so
+// the browser installer can detect the panel even while it's still booting.
+void improvDelay(unsigned long ms) {
+  unsigned long t = millis();
+  while (millis() - t < ms) { improvLoop(); delay(10); }
+}
+
 void applyTimezone() {
   setenv("TZ", timezonePosixByKey(cfg.timezone), 1);
   tzset();
@@ -5238,7 +5245,7 @@ void setup() {
     WiFi.begin(gWifiSsid, gWifiPass);
     unsigned long wifiStart = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
-      delay(250);
+      improvDelay(250);
     }
 
     // Safety net: a bad static IP (right format, wrong for this LAN) would
@@ -5253,7 +5260,7 @@ void setup() {
       WiFi.begin(gWifiSsid, gWifiPass);
       wifiStart = millis();
       while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
-        delay(250);
+        improvDelay(250);
       }
     }
   }
@@ -5269,7 +5276,7 @@ void setup() {
     // sync. Wait briefly for a real epoch, then set TZ again.
     unsigned long ntpStart = millis();
     while (time(nullptr) < 1700000000 && millis() - ntpStart < 5000) {
-      delay(100);
+      improvDelay(100);
     }
     applyTimezone();
 
