@@ -518,7 +518,9 @@ unsigned long improvAnnounceMs = 0;  // last unprompted CURRENT_STATE
 // still open would read that as "provisioning fell through" and re-show the form
 // with the stale error. Consumed into gImprovSuppressReady at boot; we then stay
 // silent until Wi-Fi is back, announce PROVISIONED once, and resume normally.
-RTC_DATA_ATTR uint32_t gImprovProvRtc = 0;
+// Must be RTC_NOINIT_ATTR, not RTC_DATA_ATTR: the latter is zero-initialised on
+// every boot (incl. a SW reset from ESP.restart), so the flag never survived.
+RTC_NOINIT_ATTR uint32_t gImprovProvRtc;
 #define IMPROV_PROV_RTC_MAGIC 0xC0FFEE17
 bool gImprovSuppressReady = false;
 
