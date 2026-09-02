@@ -8,6 +8,8 @@ Tap to toggle lights and switches, press-and-hold a light for a brightness
 slider, swipe between pages, see a live weather forecast, and run
 kitchen-style timers that can flash your lights when they finish.
 
+<img src="docs/img/outside.png" width="220" alt="A room page with light, switch, and sunrise/sunset tiles">
+
 ---
 
 ## Two ways to install
@@ -272,6 +274,10 @@ Changes take effect on the panel immediately.
 ---
 
 ## Using the panel
+
+| Home / room | Forecast | Timers | Status |
+|:-:|:-:|:-:|:-:|
+| <img src="docs/img/home.png" width="150" alt="Home page"> | <img src="docs/img/forecast.png" width="150" alt="5-day forecast"> | <img src="docs/img/timers.png" width="150" alt="Timer presets"> | <img src="docs/img/status.png" width="150" alt="Status page"> |
 
 - **Swipe left/right** - change pages, or tap an icon in the bottom bar. The
   highlighted icon is the page you're on.

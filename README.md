@@ -8,6 +8,8 @@ brightness slider, swipe between pages, check a weather forecast, and run
 kitchen timers that can flash your lights when they finish. Everything is
 configured from a built-in web UI — no YAML, no HA add-on.
 
+![An area page, the 5-day forecast, and the timers page](docs/img/screens.png)
+
 > Built from scratch on TFT_eSPI + XPT2046_Touchscreen. Not based on any
 > third-party sketch. Previously called "HA Panel".
 
