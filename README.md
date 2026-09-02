@@ -58,7 +58,8 @@ lives on the device's flash and survives firmware updates.
 
 - **ESP32-2432S028R**, the 2.8" **resistive**-touch "CYD". This firmware is
   tuned for that exact board (ST7789 panel, BGR order — many CYDs ship an
-  ILI9341; this variant does not).
+  ILI9341; this variant does not). Built and tested on
+  [this one](https://amzn.to/4h9kKCf) (Amazon affiliate link).
 - A USB **data** cable (many cheap cables are charge-only).
 
 See [CLAUDE.md](CLAUDE.md) for the hard-won hardware and build details — it
