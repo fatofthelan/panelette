@@ -34,6 +34,8 @@ browser installer won't work for you. You get the same firmware.
 ### Hardware
 - An **ESP32-2432S028R** board (the common "CYD" / Cheap Yellow Display, the
   2.8" resistive-touch version). This firmware is tuned for that exact board.
+  The one this project was built and tested on:
+  [amzn.to/4h9kKCf](https://amzn.to/4h9kKCf) (Amazon affiliate link).
 - A **USB data cable** that fits the board (micro-USB or USB-C depending on
   your revision). Many cheap cables are charge-only and will not work - if
   the board doesn't show up as a serial port, try another cable first.
