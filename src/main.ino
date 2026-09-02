@@ -513,6 +513,15 @@ size_t  improvLen = 0;
 bool    improvHostSeen = false;      // a host has sent us a valid packet
 unsigned long improvAnnounceMs = 0;  // last unprompted CURRENT_STATE
 
+// Survives ESP.restart(): set when an Improv WIFI_SETTINGS save succeeds, so the
+// reboot that applies it doesn't announce READY - an ESP Web Tools dialog that's
+// still open would read that as "provisioning fell through" and re-show the form
+// with the stale error. Consumed into gImprovSuppressReady at boot; we then stay
+// silent until Wi-Fi is back, announce PROVISIONED once, and resume normally.
+RTC_DATA_ATTR uint32_t gImprovProvRtc = 0;
+#define IMPROV_PROV_RTC_MAGIC 0xC0FFEE17
+bool gImprovSuppressReady = false;
+
 void improvSend(uint8_t type, const uint8_t* data, uint8_t len) {
   uint8_t pkt[9 + 256 + 2];
   memcpy(pkt, "IMPROV", 6);
@@ -591,6 +600,7 @@ void improvHandleWifi(const uint8_t* cd, uint8_t cdLen) {
     improvSendState(IMP_STATE_PROVISIONED);
     improvSendDeviceUrl(IMP_CMD_WIFI);
     Serial.printf("[improv] connected as %s - restarting\n", WiFi.localIP().toString().c_str());
+    gImprovProvRtc = IMPROV_PROV_RTC_MAGIC; // keep the reboot from announcing READY
     delay(500);
     ESP.restart();
   } else {
@@ -673,8 +683,14 @@ void improvHandlePacket(const uint8_t* pkt, size_t total) {
 // lost. Any CURRENT_STATE packet resolves the installer's wait.
 void improvLoop() {
   if (!improvHostSeen && millis() < 20000 && millis() - improvAnnounceMs >= 1500) {
-    improvAnnounceMs = millis();
-    improvSendState(improvCurrentState());
+    uint8_t st = improvCurrentState();
+    // After an Improv-triggered reboot, stay silent until Wi-Fi is actually
+    // back - then announce PROVISIONED once and return to normal behaviour.
+    if (!(gImprovSuppressReady && st != IMP_STATE_PROVISIONED)) {
+      improvAnnounceMs = millis();
+      improvSendState(st);
+      if (st == IMP_STATE_PROVISIONED) gImprovSuppressReady = false;
+    }
   }
 
   while (Serial.available()) {
@@ -5215,19 +5231,25 @@ void setupWebServer() {
 void setup() {
   Serial.begin(115200);
 
+  // A reboot that's applying Improv-supplied Wi-Fi credentials must NOT announce
+  // READY - a still-open ESP Web Tools dialog would read it as a failed
+  // provision. improvLoop() then stays quiet until Wi-Fi is back.
+  if (gImprovProvRtc == IMPROV_PROV_RTC_MAGIC) { gImprovProvRtc = 0; gImprovSuppressReady = true; }
+  #define IMPROV_BOOT_ANNOUNCE() do { if (!gImprovSuppressReady) improvSendState(IMP_STATE_READY); improvLoop(); } while (0)
+
   // ESP Web Tools' PRE-install Improv probe gives up 1.5 s after it opens the
   // port (which reset us) - the ROM bootloader already ate part of that. Get
   // unprompted CURRENT_STATE frames out immediately, before the slow display /
   // filesystem init; the installer's reader resolves on any CURRENT_STATE.
   delay(20);
-  for (int i = 0; i < 6; i++) { improvSendState(IMP_STATE_READY); improvLoop(); delay(20); }
+  for (int i = 0; i < 6; i++) { IMPROV_BOOT_ANNOUNCE(); delay(20); }
 
   Serial.printf("\n=== %s %s  (build %s %s) ===\n", FW_NAME, FW_VERSION, __DATE__, __TIME__);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
   analogWrite(BACKLIGHT_PIN, 255);
 
-  for (int i = 0; i < 6; i++) { improvSendState(IMP_STATE_READY); improvLoop(); delay(20); }
+  for (int i = 0; i < 6; i++) { IMPROV_BOOT_ANNOUNCE(); delay(20); }
 
   tft.init();
   tft.setRotation(2);
@@ -5235,7 +5257,7 @@ void setup() {
 
   // Keep announcing through early init (covers a probe that opened the port
   // late); improvLoop() keeps a slower announce going for ~20 s after boot.
-  for (int i = 0; i < 12; i++) { improvSendState(IMP_STATE_READY); improvLoop(); delay(120); }
+  for (int i = 0; i < 12; i++) { IMPROV_BOOT_ANNOUNCE(); delay(120); }
 
   // tft.invertDisplay(true) was tried here but had no measurable effect -
   // your photos still show accent-colored elements (footer dot, "on" tile
