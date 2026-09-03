@@ -408,12 +408,14 @@ earlier in the file) touch them - the auto-prototype gotcha.
   `TileRuntime.unavailable` (not persisted) - set from the HA `state`
   string; the tile shows "N/A" + a struck-through icon. `backlight*` /
   `ldr*` / `powerSave*` - the auto-dim feature (see the Backlight section).
-- **Web UI is multi-page**: `/` (Overview - status + Screenshot/Reboot/Test),
-  `/device`, `/appearance` (theme + Display&Power), `/connection` (HA +
-  Weather + Network + Wi-Fi), `/pages`, `/timers`, `/backup`. Shared header
-  via `settingsPageTop(title, navKey)` (heading + `settingsNav()` pill bar +
-  one-shot `gSaveNotice`) and `settingsFooter()` (dirty-guard + close). Split
-  keeps the biggest single response ~7-11 KB instead of one ~40 KB page.
+- **Web UI is multi-page**, 6 sections: `/` (Overview - status +
+  Screenshot/Reboot/Test), `/panel` (device basics + theme + Display&Power),
+  `/connection` (HA + Weather + Network + Wi-Fi), `/pages`, `/timers`,
+  `/backup`. Shared header via `settingsPageTop(title, navKey)` (heading +
+  `settingsNav()` + one-shot `gSaveNotice`) and `settingsFooter()`
+  (dirty-guard + close). `settingsNav()` is a 6-cell CSS grid - `repeat(3,1fr)`
+  on phones, `repeat(6,1fr)` at >=600px - even both ways. Split keeps the
+  biggest single response ~8-14 KB instead of one ~40 KB page.
 - **Several cards still POST `/save-device`** (Device, Theme, Home Assistant,
   Weather, Display&Power). `handleSaveDevice()` gates each card's writes
   behind a field unique to its form (`deviceName` / `haUrl` / `weatherName` /

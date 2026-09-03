@@ -4017,10 +4017,13 @@ String pageHeaderHtml(const String& title) {
   h += ".drag-float{position:fixed;z-index:999;margin:0!important;box-shadow:0 10px 28px rgba(0,0,0,.55);opacity:.97;transform:scale(1.03);user-select:none;}";
   h += ".drop-ph{border:2px dashed var(--accent);border-radius:14px;margin:10px 0;background:rgba(79,195,247,.10);}";
   h += "body.dragging{cursor:grabbing;user-select:none;}";
-  h += ".nav{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 4px;}";
-  h += ".nav a{padding:6px 12px;border:1px solid var(--border);border-radius:999px;font-size:12.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;}";
-  h += ".nav a:hover{text-decoration:none;color:var(--text);}";
-  h += ".nav a.on{background:var(--accent);color:#062230;border-color:var(--accent);font-weight:600;}";
+  h += ".nav{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:16px 0 10px;}";
+  h += "@media(min-width:600px){.nav{grid-template-columns:repeat(6,1fr);}}";
+  h += ".nav a{display:flex;align-items:center;justify-content:center;min-height:40px;padding:6px 4px;text-align:center;"
+       "border:1px solid var(--border);border-radius:9px;background:var(--panel2);"
+       "font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);}";
+  h += ".nav a:hover{text-decoration:none;color:var(--text);border-color:var(--dim);}";
+  h += ".nav a.on{background:var(--accent);color:#06222f;border-color:var(--accent);}";
   h += "</style></head><body><div class='wrap'>";
   return h;
 }
@@ -4031,8 +4034,7 @@ const String htmlFooter = "</div></body></html>";
 String settingsNav(const char* cur) {
   struct { const char* href; const char* key; const char* label; } items[] = {
     {"/",           "home",       "Overview"},
-    {"/device",     "device",     "Device"},
-    {"/appearance", "appearance", "Appearance"},
+    {"/panel",      "panel",      "Panel"},
     {"/connection", "connection", "Connection"},
     {"/pages",      "pages",      "Pages"},
     {"/timers",     "timers",     "Timers"},
@@ -4207,11 +4209,11 @@ void handleRoot() {
   server.send(200, "text/html", h);
 }
 
-// GET /device
-void handleDevicePage() {
-  String h = settingsPageTop("Device", "device");
+// GET /panel - device basics + theme + Display & Power.
+void handlePanelPage() {
+  String h = settingsPageTop("Panel", "panel");
   h += "<form method='POST' action='/save-device' class='dirty-guard'>";
-  h += "<input type='hidden' name='_return' value='/device'>";
+  h += "<input type='hidden' name='_return' value='/panel'>";
   h += "<section class='card'><h2>Device</h2>";
   h += "<label>Device name (also the .local hostname)</label>";
   h += "<input name='deviceName' value='" + htmlEscape(cfg.deviceName) + "'>";
@@ -4236,16 +4238,9 @@ void handleDevicePage() {
   h += "</select>";
   h += "<button class='primary' type='submit'>Save device</button>";
   h += "</section></form>";
-  h += settingsFooter();
-  server.send(200, "text/html", h);
-}
-
-// GET /appearance - theme + Display & Power.
-void handleAppearancePage() {
-  String h = settingsPageTop("Appearance", "appearance");
 
   h += "<form method='POST' action='/save-device' class='dirty-guard'>";
-  h += "<input type='hidden' name='_return' value='/appearance'>";
+  h += "<input type='hidden' name='_return' value='/panel'>";
   h += "<section class='card'><h2>Theme</h2>";
   h += "<label>Colour scheme</label><select name='colorScheme'>";
   for (int i = 0; i < COLOR_SCHEMES_COUNT; i++) {
@@ -4267,7 +4262,7 @@ void handleAppearancePage() {
   h += "</section></form>";
 
   h += "<form method='POST' action='/save-device' class='dirty-guard'>";
-  h += "<input type='hidden' name='_return' value='/appearance'>";
+  h += "<input type='hidden' name='_return' value='/panel'>";
   h += "<section class='card'><h2>Display &amp; Power</h2>";
   h += "<style>"
        ".rng{display:flex;align-items:center;gap:10px;margin:8px 0}"
@@ -5552,8 +5547,7 @@ void setupWebServer() {
   }
 
   server.on("/", handleRoot);
-  server.on("/device", handleDevicePage);
-  server.on("/appearance", handleAppearancePage);
+  server.on("/panel", handlePanelPage);
   server.on("/connection", handleConnectionPage);
   server.on("/pages", handlePagesPage);
   server.on("/timers", handleTimersSettingsPage);
