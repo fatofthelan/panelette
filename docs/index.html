@@ -133,7 +133,9 @@
       the <a href="https://amzn.to/4dhlNyx">ELEGOO 2-pack (USB-C, ILI9341)</a> &mdash;
       the recommended one &mdash; and <a href="https://amzn.to/4h9kKCf">this ST7789 board</a>.
       (Amazon affiliate links.)</li>
-    <li>A <b>USB data cable</b> that fits it. Many cheap cables are charge-only and won't work.</li>
+    <li>A <b>USB data cable</b> that fits it. Many cheap cables are charge-only and won't work.
+      On USB-C boards, use a <b>USB-A&ndash;to&ndash;USB-C</b> cable &mdash; many CYDs skip the
+      resistors a C&ndash;to&ndash;C cable needs and won't power on with one.</li>
     <li>A <b>USB-serial driver</b> if your computer doesn't see the board (CH340 on most,
       CP2102 on some): <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html">CH340 Windows</a> &middot;
       <a href="https://www.wch-ic.com/downloads/CH341SER_MAC_ZIP.html">CH340 macOS</a>
@@ -148,8 +150,10 @@
     <li>Done. Click <b>Visit Device</b> to open the panel's settings page and add your tiles.</li>
   </ul>
   <div class="note">
-    If the flash won't start, hold the <b>BOOT</b> button on the board while clicking Install,
-    then release it once it says "Connecting&hellip;".
+    <b>Board not detected, or the screen stays dark?</b> On a USB-C board, use a
+    <b>USB-A&ndash;to&ndash;USB-C</b> cable &mdash; many CYDs won't power on from a C&ndash;to&ndash;C
+    one. If the flash won't start, hold the <b>BOOT</b> button while clicking Install
+    and release it once it says "Connecting&hellip;".
   </div>
   <div class="note">
     <b>Screen white, garbled, or wrong colours after flashing?</b> The "ESP32-2432S028R"

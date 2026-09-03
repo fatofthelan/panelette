@@ -54,6 +54,10 @@ browser installer won't work for you. You get the same firmware.
 - A **USB data cable** that fits the board (USB-C or micro-USB depending on
   the model). Many cheap cables are charge-only and will not work - if the
   board doesn't show up as a serial port, try another cable first.
+  - **On USB-C boards, use a USB-A-to-USB-C cable, not USB-C-to-USB-C.** Many
+    CYDs omit the CC pull-down resistors a C-to-C cable relies on, so the
+    board gets no power (screen stays dark, no serial port). A plain USB-A
+    port always supplies 5 V, so an A-to-C cable works. Known CYD quirk.
 - A computer (Windows, macOS, or Linux) for the one-time flashing step.
 
 A fresh unit names itself `PaneletteXXXX` (the last 4 hex digits of its MAC),
@@ -342,7 +346,11 @@ the panel reboots afterward.
 **The board doesn't show up / upload fails with "could not open port" or
 "no serial data received"**
 - Use a different USB cable (charge-only cables are the #1 cause).
-- Install the CH340 driver (see "What you need").
+- **USB-C board + a USB-C-to-USB-C cable?** Switch to a **USB-A-to-USB-C**
+  cable. Many CYDs omit the CC pull-down resistors a C-to-C cable needs, so
+  the board never powers on. Known CYD quirk.
+- Install the CH340 driver (see "What you need"); a CP2102 board needs the
+  Silicon Labs CP210x driver instead.
 - Close anything else using the serial port (Arduino IDE, a serial monitor).
 - Some boards need you to **hold the BOOT button** while upload starts, then
   release it once "Connecting..." appears.
@@ -351,18 +359,19 @@ the panel reboots afterward.
 
 **Upload succeeds but the screen is white, black, or garbled**
 - "ESP32-2432S028R" ships with several different display panels. The browser
-  installer and the default `pio run` target (`-e esp32dev`) are built for the
-  panel on the board this project was developed on. Build from source with a
-  matching env instead:
+  installer defaults to ILI9341 (the recommended ELEGOO board); if yours is
+  different, pick another panel option there, or build from source with a
+  matching env:
   - `~/.platformio/penv/bin/pio run -e cyd_ili9341 -t upload` &mdash; ELEGOO
-    boards and other ILI9341 panels
+    boards and other ILI9341 panels (this is the default)
   - `~/.platformio/penv/bin/pio run -e cyd_st7789 -t upload` &mdash; "normal"
     ST7789 panels (no colour-inversion quirk)
-  - `~/.platformio/penv/bin/pio run -e esp32dev -t upload` &mdash; the default
+  - `~/.platformio/penv/bin/pio run -e esp32dev -t upload` &mdash; ST7789
+    boards whose colours come out inverted on `cyd_st7789`
 - Symptom guide (also in `platformio.ini`'s header):
   - **white, no image** &rarr; wrong driver, try another env
   - **white with negative-image (dark-on-light) text** &rarr; right driver,
-    wrong inversion &mdash; switch between `esp32dev` and `cyd_st7789`
+    wrong inversion &mdash; switch between `cyd_st7789` and `esp32dev`
   - **blues look orange / colours swapped** &rarr; edit that env's
     `TFT_RGB_ORDER` between `TFT_BGR` and `TFT_RGB`
   - **small offset or a thin black band at an edge** &rarr; add

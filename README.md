@@ -67,8 +67,11 @@ option per panel. **Verified boards:**
 | [ELEGOO 2-pack, USB-C](https://amzn.to/4dhlNyx) — *recommended* | ILI9341 | `cyd_ili9341` (installer default) |
 | [This ST7789 board](https://amzn.to/4h9kKCf) | ST7789 (inverts colours) | `esp32dev` |
 
-*Amazon affiliate links.* Other ST7789 CYDs use the `cyd_st7789` option. Plus a
-USB **data** cable (many cheap cables are charge-only).
+*Amazon affiliate links.* Other ST7789 CYDs use the `cyd_st7789` option.
+
+Plus a USB **data** cable (many cheap cables are charge-only). For a USB-C
+board, use a **USB-A-to-USB-C** cable — many CYDs won't power on from a
+C-to-C cable (missing CC resistors, a known CYD quirk).
 
 If the screen is white or the colours are wrong after flashing, it's the wrong
 panel option — pick another and reflash (config is kept). See
