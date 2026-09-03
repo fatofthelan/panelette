@@ -4448,13 +4448,29 @@ void handlePagesPage() {
     if (i == 1) h += "<div id='pageList' class='sortable'>";
     bool tilePage = (isHome || strcmp(pg.type, "area") == 0);
     h += "<div class='row' data-item='" + id + "'>";
+
+    // Title line: drag handle + name/meta on the left, Hide toggle on the right.
+    h += "<div style='display:flex;align-items:center;gap:8px'>";
     if (!isHome) h += "<span class='drag-handle' title='Drag to reorder'>&#x283F;</span>";
+    h += "<div style='flex:1;min-width:0'>";
     h += "<b>" + htmlEscape(pg.name) + "</b> <span class='muted'>(" + String(pg.type);
     if (tilePage) h += " &middot; " + String(pg.tileCount) + (pg.tileCount == 1 ? " tile" : " tiles");
     h += ")</span>";
     if (i == currentPageIndex) h += " <span class='pill ok'>on screen</span>";
-    if (pg.hidden) h += " <span class='pill warn'>hidden</span>";
-    h += "<br><a href='/page?id=" + id + "'>Manage tiles</a> &nbsp; ";
+    h += "</div>";
+    if (pageCanHide(pg.type)) {
+      h += "<form method='POST' action='/page/set-hidden' style='margin:0'>";
+      h += "<input type='hidden' name='id' value='" + id + "'>";
+      h += "<label class='check' style='margin:0;gap:8px' title='Hide from the panel&#39;s swipe nav + footer'>";
+      h += "<span class='muted' style='font-size:12px'>Hide</span>";
+      h += "<input type='checkbox' name='hidden' onchange='this.form.submit()'" + String(pg.hidden ? " checked" : "") + ">";
+      h += "</label></form>";
+    }
+    h += "</div>";
+
+    // Actions line.
+    h += "<div style='margin-top:8px'>";
+    h += "<a href='/page?id=" + id + "'>Manage tiles</a> &nbsp; ";
     h += "<form style='display:inline' method='POST' action='/page/rename'>";
     h += "<input type='hidden' name='id' value='" + id + "'>";
     h += "<input style='width:110px;display:inline-block' name='name' value='" + htmlEscape(pg.name) + "'>";
@@ -4464,12 +4480,8 @@ void handlePagesPage() {
       h += "<input type='hidden' name='id' value='" + id + "'>";
       h += "<button class='danger' type='submit'>Delete</button></form>";
     }
-    if (pageCanHide(pg.type)) {
-      h += " <form style='display:inline' method='POST' action='/page/set-hidden'>";
-      h += "<input type='hidden' name='id' value='" + id + "'>";
-      h += "<label style='font-size:13px;color:var(--dim)'><input type='checkbox' name='hidden' style='width:16px;height:16px;vertical-align:-3px' onchange='this.form.submit()'" +
-           String(pg.hidden ? " checked" : "") + "> Hide</label></form>";
-    }
+    h += "</div>";
+
     h += "</div>";
   }
   if (cfg.pageCount > 1) h += "</div>";
