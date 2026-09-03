@@ -3992,6 +3992,10 @@ String pageHeaderHtml(const String& title) {
   h += ".check input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent);}";
   h += ".check input[type=checkbox]:checked::before{transform:translateX(18px);background:#0b1f28;}";
   h += ".check input[type=checkbox]:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}";
+  // Compact toggle - used inline in tight rows (e.g. the Pages list).
+  h += ".check.sm input[type=checkbox]{width:34px;height:20px;}";
+  h += ".check.sm input[type=checkbox]::before{width:14px;height:14px;top:2px;left:2px;}";
+  h += ".check.sm input[type=checkbox]:checked::before{transform:translateX(14px);}";
   h += "input,select{padding:10px 12px;margin:0;width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:14px;font-family:var(--font);}";
   h += "input:focus,select:focus{outline:none;border-color:var(--accent);}";
   h += "button{padding:9px 16px;margin:10px 6px 0 0;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-family:var(--font);cursor:pointer;}";
@@ -4017,11 +4021,59 @@ String pageHeaderHtml(const String& title) {
   h += ".drag-float{position:fixed;z-index:999;margin:0!important;box-shadow:0 10px 28px rgba(0,0,0,.55);opacity:.97;transform:scale(1.03);user-select:none;}";
   h += ".drop-ph{border:2px dashed var(--accent);border-radius:14px;margin:10px 0;background:rgba(79,195,247,.10);}";
   h += "body.dragging{cursor:grabbing;user-select:none;}";
+  h += ".nav{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:16px 0 10px;}";
+  h += "@media(min-width:600px){.nav{grid-template-columns:repeat(6,1fr);}}";
+  h += ".nav a{display:flex;align-items:center;justify-content:center;min-height:40px;padding:6px 4px;text-align:center;"
+       "border:1px solid var(--border);border-radius:9px;background:var(--panel2);"
+       "font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);}";
+  h += ".nav a:hover{text-decoration:none;color:var(--text);border-color:var(--dim);}";
+  h += ".nav a.on{background:var(--accent);color:#06222f;border-color:var(--accent);}";
   h += "</style></head><body><div class='wrap'>";
   return h;
 }
 
 const String htmlFooter = "</div></body></html>";
+
+// The settings-section nav. `cur` marks the active link (or "" / nullptr).
+String settingsNav(const char* cur) {
+  struct { const char* href; const char* key; const char* label; } items[] = {
+    {"/",           "home",       "Overview"},
+    {"/panel",      "panel",      "Panel"},
+    {"/connection", "connection", "Connection"},
+    {"/pages",      "pages",      "Pages"},
+    {"/timers",     "timers",     "Timers"},
+    {"/backup",     "backup",     "Backup"},
+  };
+  String h = "<nav class='nav'>";
+  for (auto& it : items) {
+    bool on = cur && strcmp(cur, it.key) == 0;
+    h += "<a href='" + String(it.href) + "'" + (on ? " class='on'" : "") + ">" + it.label + "</a>";
+  }
+  h += "</nav>";
+  return h;
+}
+
+// Shared top of every settings section: <head>, the PANELETTE heading, the
+// nav, and the one-shot save notice.
+String settingsPageTop(const String& title, const char* navKey) {
+  String h = pageHeaderHtml(title);
+  h += "<h1>PANELETTE <span class='dim'>&mdash; " + htmlEscape(cfg.deviceName) + "</span></h1>";
+  h += "<div class='muted' style='margin:-2px 0 8px'>v" FW_VERSION "  &middot;  " PANEL_VARIANT " panel</div>";
+  h += settingsNav(navKey);
+  if (gSaveNotice.length() > 0) {
+    h += "<div class='notice'>" + htmlEscape(gSaveNotice) + "</div>";
+    gSaveNotice = "";
+  }
+  return h;
+}
+
+// 303 back to wherever the form said (`_return`), else `fallback`.
+void redirectAfterSave(const char* fallback) {
+  String to = server.hasArg("_return") ? server.arg("_return") : String(fallback);
+  if (!to.startsWith("/")) to = "/";           // never an off-site redirect
+  server.sendHeader("Location", to);
+  server.send(303);
+}
 
 // JS for the tile Add/Edit forms: when the Type changes, fetch that
 // domain's entities from /ha/entities and fill the <datalist id='entlist'>.
@@ -4121,21 +4173,51 @@ String sortableScript() {
     "</script>");
 }
 
+// Dirty-form guard + page close. On every settings section.
+String settingsFooter() {
+  return String(
+    "<script>(function(){var dirty=false;"
+    "document.querySelectorAll('form.dirty-guard').forEach(function(f){"
+    "f.addEventListener('input',function(){dirty=true;});"
+    "f.addEventListener('submit',function(){dirty=false;});});"
+    "window.addEventListener('beforeunload',function(e){if(dirty){e.preventDefault();e.returnValue='';}});})();</script>") + htmlFooter;
+}
+
+// GET / - Overview: live status + quick actions.
 void handleRoot() {
-  String h = pageHeaderHtml("Panelette Settings");
-  h += "<h1>PANELETTE <span class='dim'>&mdash; " + htmlEscape(cfg.deviceName) + "</span></h1>";
-  h += "<div class='muted' style='margin:-2px 0 8px'>v" FW_VERSION
-       "  &middot;  " PANEL_VARIANT " panel</div>";
+  String h = settingsPageTop("Panelette", "home");
 
-  if (gSaveNotice.length() > 0) {
-    h += "<div class='notice'>" + htmlEscape(gSaveNotice) + "</div>";
-    gSaveNotice = "";
-  }
+  bool wifi = (WiFi.status() == WL_CONNECTED);
+  const char* haPill = haConnState == HA_CONN_OK ? "ok"
+                     : (haConnState == HA_CONN_AUTH_FAIL || haConnState == HA_CONN_UNREACHABLE) ? "bad" : "warn";
+  h += "<section class='card'><h2>Status</h2>";
+  h += "<div class='row'><b>Wi-Fi</b><br><span class='muted'>" +
+       String(wifi ? (String(WiFi.RSSI()) + " dBm on " + htmlEscape(WiFi.SSID())) : String("not connected")) + "</span></div>";
+  h += "<div class='row'><b>Address</b><br><span class='muted'>" +
+       String(wifi ? (WiFi.localIP().toString() + "  &middot;  " + htmlEscape(sanitizeHostname(cfg.deviceName)) + ".local") : String("&mdash;")) + "</span></div>";
+  h += "<div class='row'><b>Home Assistant</b><br><span id='haStat' class='pill " + String(haPill) + "'>" +
+       htmlEscape(haConnLabel(haConnState)) + "</span> <button type='button' onclick='haTest(this)'>Test</button></div>";
+  h += "</section>";
 
-  // ---- Device / Home Assistant / Weather (three independent forms, one
-  // shared handler - handleSaveDevice() is all hasArg()-guarded) ---------
+  h += "<section class='card'><h2>Quick actions</h2>";
+  h += "<a class='btnlink' href='/screenshot' style='background:var(--panel2);color:var(--text);border-color:var(--border);font-weight:400'>&#128247; Screenshot</a> ";
+  h += "<form style='display:inline' method='POST' action='/reboot' onsubmit=\"return confirm('Reboot the panel now?');\">";
+  h += "<button type='submit'>Reboot panel</button></form>";
+  h += "<div class='muted' style='margin-top:8px'>Screenshot captures the current panel screen (~2 s).</div>";
+  h += "</section>";
+
+  h += "<script>function haTest(b){var s=document.getElementById('haStat');b.disabled=true;s.textContent='Testing...';s.className='pill warn';"
+       "fetch('/ha-test').then(r=>r.text()).then(t=>{s.textContent=t;s.className='pill '+(t=='Connected'?'ok':'bad');b.disabled=false;})"
+       ".catch(function(){s.textContent='Test failed';s.className='pill bad';b.disabled=false;});}</script>";
+  h += settingsFooter();
+  server.send(200, "text/html", h);
+}
+
+// GET /panel - device basics + theme + Display & Power.
+void handlePanelPage() {
+  String h = settingsPageTop("Panel", "panel");
   h += "<form method='POST' action='/save-device' class='dirty-guard'>";
-
+  h += "<input type='hidden' name='_return' value='/panel'>";
   h += "<section class='card'><h2>Device</h2>";
   h += "<label>Device name (also the .local hostname)</label>";
   h += "<input name='deviceName' value='" + htmlEscape(cfg.deviceName) + "'>";
@@ -4158,7 +4240,12 @@ void handleRoot() {
   h += "<option value='1'" + String(cfg.uiFontSize == 1 ? " selected" : "") + ">Medium</option>";
   h += "<option value='2'" + String(cfg.uiFontSize == 2 ? " selected" : "") + ">Large</option>";
   h += "</select>";
-  h += "<h3>Theme</h3>";
+  h += "<button class='primary' type='submit'>Save device</button>";
+  h += "</section></form>";
+
+  h += "<form method='POST' action='/save-device' class='dirty-guard'>";
+  h += "<input type='hidden' name='_return' value='/panel'>";
+  h += "<section class='card'><h2>Theme</h2>";
   h += "<label>Colour scheme</label><select name='colorScheme'>";
   for (int i = 0; i < COLOR_SCHEMES_COUNT; i++) {
     h += "<option value='" + String(COLOR_SCHEMES[i].key) + "'";
@@ -4175,11 +4262,11 @@ void handleRoot() {
   h += "<option value='square'" + String(!strcmp(cfg.cornerStyle, "square") ? " selected" : "") + ">Square</option>";
   h += "</select>";
   h += "<div class='muted' style='margin-top:6px;'>Dark/light is separate &mdash; toggle it on the panel's Status screen. All fonts are anti-aliased.</div>";
-  h += "<button class='primary' type='submit'>Save device</button>";
+  h += "<button class='primary' type='submit'>Save theme</button>";
   h += "</section></form>";
 
-  // ---- Display & Power (own form, gated on backlightMode) ----
   h += "<form method='POST' action='/save-device' class='dirty-guard'>";
+  h += "<input type='hidden' name='_return' value='/panel'>";
   h += "<section class='card'><h2>Display &amp; Power</h2>";
   h += "<style>"
        ".rng{display:flex;align-items:center;gap:10px;margin:8px 0}"
@@ -4187,7 +4274,6 @@ void handleRoot() {
        ".rng b{min-width:3.5ch;text-align:right;font-variant-numeric:tabular-nums;color:var(--accent)}"
        ".bl-sub{margin:10px 0 0;padding:12px 0 2px;border-top:1px solid var(--border)}"
        "</style>";
-
   {
     auto blRadio = [&](const char* val, const char* lbl) {
       bool on = !strcmp(cfg.backlightMode, val);
@@ -4198,27 +4284,22 @@ void handleRoot() {
       h += "<label>" + String(lbl) + "</label><div class='rng'><input type='range' min='0' max='100' name='" + String(name)
            + "' value='" + String(val) + "' oninput='this.nextElementSibling.textContent=this.value'><b>" + String(val) + "</b></div>";
     };
-
     h += "<label>Brightness mode</label>";
     blRadio("manual",   "Manual &mdash; one fixed level");
     blRadio("schedule", "Schedule &mdash; day / night levels by time");
     blRadio("sensor",   "Sensor &mdash; follow the room's light (LDR)");
-
     h += "<div id='bl-manual' class='bl-sub'>";
     slider("backlightManualPct", "Level", cfg.backlightManualPct);
     h += "</div>";
-
     h += "<div id='bl-levels' class='bl-sub'>";
     slider("backlightHighPct", "Bright level (day / lit room)", cfg.backlightHighPct);
     slider("backlightLowPct",  "Dim level (night / dark room)", cfg.backlightLowPct);
     h += "</div>";
-
     h += "<div id='bl-schedule' class='bl-sub'><div class='grid2'>";
     h += "<div><label>Night from</label><input type='time' name='backlightNightFrom' value='" + minToHHMM(cfg.backlightNightFromMin) + "'></div>";
     h += "<div><label>Night to</label><input type='time' name='backlightNightTo' value='" + minToHHMM(cfg.backlightNightToMin) + "'></div>";
     h += "</div><div class='check'><input type='checkbox' id='blsun' name='backlightFollowSun'" + String(cfg.backlightFollowSun ? " checked" : "")
          + "><label for='blsun' style='margin:0'>Follow sunset &rarr; sunrise instead (needs location set)</label></div></div>";
-
     h += "<div id='bl-sensor' class='bl-sub'>";
     h += "<div class='muted'>Live light reading: <b id='ldrNow'>&hellip;</b> &nbsp;<span>saved: dark "
          + String(cfg.ldrDarkRaw) + " &middot; bright " + String(cfg.ldrBrightRaw) + "</span></div>";
@@ -4227,7 +4308,6 @@ void handleRoot() {
     h += "<div class='muted' style='margin:6px 0'>Cover the board and <button type='button' onclick='ldrSet(\"dark\",this)'>Set dark point</button>, "
          "then light it and <button type='button' onclick='ldrSet(\"bright\",this)'>Set bright point</button>. Direction sorts itself out.</div>";
     h += "<div class='muted'>If the reading doesn't move when you shade the board, it has no usable sensor &mdash; use Schedule instead.</div></div>";
-
     h += "<div class='bl-sub'><h3>Power save</h3>";
     h += "<div class='check'><input type='checkbox' id='psave' name='powerSave'" + String(cfg.powerSave ? " checked" : "")
          + "><label for='psave' style='margin:0'>Dim the screen when idle; a tap wakes it</label></div>";
@@ -4242,7 +4322,6 @@ void handleRoot() {
     slider("powerSaveDimPct", "Dim to (0 = screen off)", cfg.powerSaveDimPct);
     h += "</div>";
   }
-
   h += "<button class='primary' type='submit'>Save display</button>";
   h += "</section></form>";
   h += "<script>"
@@ -4259,8 +4338,16 @@ void handleRoot() {
        "document.getElementById(which==='dark'?'ldrDark':'ldrBright').value=raw;"
        "var o=b.textContent;b.textContent='set: '+raw;setTimeout(function(){b.textContent=o;},1500);});}"
        "</script>";
+  h += settingsFooter();
+  server.send(200, "text/html", h);
+}
+
+// GET /connection - Home Assistant + Weather + Network + Wi-Fi.
+void handleConnectionPage() {
+  String h = settingsPageTop("Connection", "connection");
 
   h += "<form method='POST' action='/save-device' class='dirty-guard'>";
+  h += "<input type='hidden' name='_return' value='/connection'>";
   h += "<section class='card'><h2>Home Assistant</h2>";
   h += "<label>Home Assistant URL</label>";
   h += "<input name='haUrl' value='" + htmlEscape(cfg.haUrl) + "'>";
@@ -4270,8 +4357,7 @@ void handleRoot() {
        String(strlen(cfg.haToken) > 0 ? "Saved (leave blank to keep it)" : "Paste your HA token") + "'>";
   {
     const char* pillCls = haConnState == HA_CONN_OK ? "ok"
-                        : (haConnState == HA_CONN_AUTH_FAIL || haConnState == HA_CONN_UNREACHABLE) ? "bad"
-                        : "warn";
+                        : (haConnState == HA_CONN_AUTH_FAIL || haConnState == HA_CONN_UNREACHABLE) ? "bad" : "warn";
     h += "<div style='margin-top:12px'>Connection: <span id='haStat' class='pill " + String(pillCls) + "'>" +
          htmlEscape(haConnLabel(haConnState)) + "</span> ";
     h += "<button type='button' onclick='haTest(this)'>Test</button></div>";
@@ -4288,6 +4374,7 @@ void handleRoot() {
   h += "</section></form>";
 
   h += "<form method='POST' action='/save-device' class='dirty-guard'>";
+  h += "<input type='hidden' name='_return' value='/connection'>";
   h += "<section class='card'><h2>Weather</h2>";
   h += "<div class='muted' style='margin-bottom:6px'>Coordinates are imported from Home Assistant on save. Edit any field to override.</div>";
   h += "<label>Location name (shown on the Forecast screen)</label>";
@@ -4303,13 +4390,13 @@ void handleRoot() {
        "fetch('/ha-test').then(r=>r.text()).then(t=>{s.textContent=t;s.className='pill '+(t=='Connected'?'ok':'bad');b.disabled=false;})"
        ".catch(function(){s.textContent='Test failed';s.className='pill bad';b.disabled=false;});}</script>";
 
-  // ---- Network -------------------------------------------------------
   h += "<section class='card'><h2>Network</h2>";
   if (staticIpFellBack) {
     h += "<div class='notice'>The configured static IP didn't connect - the panel is on DHCP for now (current IP: " +
          htmlEscape(WiFi.localIP().toString()) + "). Fix the values below or switch to Automatic.</div>";
   }
   h += "<form method='POST' action='/save-network' class='dirty-guard'>";
+  h += "<input type='hidden' name='_return' value='/connection'>";
   h += "<div class='check'><input type='radio' id='nmDhcp' name='netMode' value='dhcp'" + String(cfg.useStaticIp ? "" : " checked") +
        "><label for='nmDhcp' style='margin:0'>Automatic (DHCP)</label></div>";
   h += "<div class='check'><input type='radio' id='nmStatic' name='netMode' value='static'" + String(cfg.useStaticIp ? " checked" : "") +
@@ -4329,7 +4416,6 @@ void handleRoot() {
   h += "<script>(function(){var f=document.getElementById('staticFields');"
        "function u(){f.style.display=document.querySelector('input[name=netMode]:checked').value=='static'?'':'none';}"
        "var r=document.getElementsByName('netMode');for(var i=0;i<r.length;i++)r[i].addEventListener('change',u);u();})();</script>";
-
   h += "<h3>Wi-Fi network</h3>";
   h += "<div class='muted'>Currently on <b>" + htmlEscape(WiFi.SSID()) + "</b>.</div>";
   if (gWifiCredSource == WCS_COMPILE) {
@@ -4343,71 +4429,87 @@ void handleRoot() {
     h += "<button class='danger' type='submit'>Forget Wi-Fi &amp; restart</button></form>";
   }
   h += "</section>";
+  h += settingsFooter();
+  server.send(200, "text/html", h);
+}
 
-  // ---- Pages ----------------------------------------------------------
+// GET /pages
+void handlePagesPage() {
+  String h = settingsPageTop("Pages", "pages");
   h += "<section class='card'><h2>Pages</h2>";
-  {
-    h += "<div class='muted' style='margin-bottom:8px'>Drag a handle to reorder (Home stays first). Tick <b>Hide</b> to drop a page from the panel's swipe nav and footer. ";
-    if (cfg.customPageOrder) {
-      h += "Order is custom &ndash; ";
-      h += "<form method='POST' action='/page/order-reset' style='display:inline'><button type='submit'>reset to default</button></form>";
-    } else {
-      h += "Default order: Home, rooms, Forecast, Timers, Status.";
+  h += "<div class='muted' style='margin-bottom:8px'>Drag a handle to reorder (Home stays first). Tick <b>Hide</b> to drop a page from the panel's swipe nav and footer. ";
+  if (cfg.customPageOrder) {
+    h += "Order is custom &ndash; ";
+    h += "<form method='POST' action='/page/order-reset' style='display:inline'><button type='submit'>reset to default</button></form>";
+  } else {
+    h += "Default order: Home, rooms, Forecast, Timers, Status.";
+  }
+  h += "</div>";
+  for (int i = 0; i < cfg.pageCount; i++) {
+    PageConfig& pg = cfg.pages[i];
+    bool isHome = (strcmp(pg.type, "home") == 0);
+    String id = String(pg.id);
+    if (i == 1) h += "<div id='pageList' class='sortable'>";
+    bool tilePage = (isHome || strcmp(pg.type, "area") == 0);
+    h += "<div class='row' data-item='" + id + "' style='margin:14px 0'>";
+
+    // Title line: drag handle + name/meta on the left, Hide toggle on the right.
+    h += "<div style='display:flex;align-items:center;gap:8px'>";
+    if (!isHome) h += "<span class='drag-handle' title='Drag to reorder'>&#x283F;</span>";
+    h += "<div style='flex:1;min-width:0'>";
+    h += "<b>" + htmlEscape(pg.name) + "</b> <span class='muted'>(" + String(pg.type);
+    if (tilePage) h += " &middot; " + String(pg.tileCount) + (pg.tileCount == 1 ? " tile" : " tiles");
+    h += ")</span>";
+    if (i == currentPageIndex) h += " <span class='pill ok'>on screen</span>";
+    h += "</div>";
+    if (pageCanHide(pg.type)) {
+      h += "<form method='POST' action='/page/set-hidden' style='margin:0'>";
+      h += "<input type='hidden' name='id' value='" + id + "'>";
+      h += "<label class='check sm' style='margin:0;gap:7px' title='Hide from the panel&#39;s swipe nav + footer'>";
+      h += "<span class='muted' style='font-size:11px;letter-spacing:.04em'>HIDE</span>";
+      h += "<input type='checkbox' name='hidden' onchange='this.form.submit()'" + String(pg.hidden ? " checked" : "") + ">";
+      h += "</label></form>";
     }
     h += "</div>";
 
-    // Home is pinned at index 0 (several call sites assume cfg.pages[0] is
-    // the home page), so it renders outside the sortable list.
-    for (int i = 0; i < cfg.pageCount; i++) {
-      PageConfig& pg = cfg.pages[i];
-      bool isHome = (strcmp(pg.type, "home") == 0);
-      String id = String(pg.id);
-
-      if (i == 1) h += "<div id='pageList' class='sortable'>";
-
-      bool tilePage = (isHome || strcmp(pg.type, "area") == 0);
-
-      h += "<div class='row' data-item='" + id + "'>";
-      if (!isHome) h += "<span class='drag-handle' title='Drag to reorder'>&#x283F;</span>";
-      h += "<b>" + htmlEscape(pg.name) + "</b> <span class='muted'>(" + String(pg.type);
-      if (tilePage) h += " &middot; " + String(pg.tileCount) + (pg.tileCount == 1 ? " tile" : " tiles");
-      h += ")</span>";
-      if (i == currentPageIndex) h += " <span class='pill ok'>on screen</span>";
-      if (pg.hidden) h += " <span class='pill warn'>hidden</span>";
-      h += "<br><a href='/page?id=" + id + "'>Manage tiles</a> &nbsp; ";
-      h += "<form style='display:inline' method='POST' action='/page/rename'>";
+    // Actions line.
+    h += "<div style='margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:14px'>";
+    h += "<a href='/page?id=" + id + "'>Manage tiles</a>";
+    h += "<form style='display:flex;gap:6px;margin:0' method='POST' action='/page/rename'>";
+    h += "<input type='hidden' name='id' value='" + id + "'>";
+    h += "<input style='width:110px' name='name' value='" + htmlEscape(pg.name) + "'>";
+    h += "<button type='submit' style='margin:0'>Rename</button></form>";
+    if (pg.deletable) {
+      h += "<form style='margin:0' method='POST' action='/page/delete' onsubmit=\"return confirm('Delete this page and its tiles?');\">";
       h += "<input type='hidden' name='id' value='" + id + "'>";
-      h += "<input style='width:110px;display:inline-block' name='name' value='" + htmlEscape(pg.name) + "'>";
-      h += "<button type='submit'>Rename</button></form>";
-      if (pg.deletable) {
-        h += " <form style='display:inline' method='POST' action='/page/delete' onsubmit=\"return confirm('Delete this page and its tiles?');\">";
-        h += "<input type='hidden' name='id' value='" + id + "'>";
-        h += "<button class='danger' type='submit'>Delete</button></form>";
-      }
-      if (pageCanHide(pg.type)) {
-        h += " <form style='display:inline' method='POST' action='/page/set-hidden'>";
-        h += "<input type='hidden' name='id' value='" + id + "'>";
-        h += "<label style='font-size:13px;color:var(--dim)'><input type='checkbox' name='hidden' style='width:16px;height:16px;vertical-align:-3px' onchange='this.form.submit()'" +
-             String(pg.hidden ? " checked" : "") + "> Hide</label></form>";
-      }
-      h += "</div>";
+      h += "<button class='danger' type='submit' style='margin:0'>Delete</button></form>";
     }
-    if (cfg.pageCount > 1) h += "</div>";
+    h += "</div>";
 
-    if (cfg.pageCount < MAX_PAGES) {
-      h += "<form method='POST' action='/page/add' style='margin-top:12px'>";
-      h += "<label>Add area page</label><input name='name' placeholder='e.g. Kitchen'>";
-      h += "<button class='primary' type='submit'>Add page</button></form>";
-    } else {
-      h += "<p class='muted'>Maximum of " + String(MAX_PAGES) + " pages reached.</p>";
-    }
+    h += "</div>";
+  }
+  if (cfg.pageCount > 1) h += "</div>";
+  if (cfg.pageCount < MAX_PAGES) {
+    h += "<form method='POST' action='/page/add' style='margin-top:12px'>";
+    h += "<label>Add area page</label><input name='name' placeholder='e.g. Kitchen'>";
+    h += "<button class='primary' type='submit'>Add page</button></form>";
+  } else {
+    h += "<p class='muted'>Maximum of " + String(MAX_PAGES) + " pages reached.</p>";
   }
   h += "</section>";
+  h += sortableScript();
+  h += "<script>(function(){var L=document.getElementById('pageList');"
+       "if(L)makeSortable(L,function(o){postOrder('/page/reorder',o);});})();</script>";
+  h += settingsFooter();
+  server.send(200, "text/html", h);
+}
 
-  // ---- Timers --------------------------------------------------------
+// GET /timers - timer expiry alerts + preset buttons.
+void handleTimersSettingsPage() {
+  String h = settingsPageTop("Timers", "timers");
   h += "<section class='card'><h2>Timers</h2>";
-
-  h += "<h3>Timer expiry alerts</h3><form method='POST' action='/save-flash'>";
+  h += "<h3>Timer expiry alerts</h3><form method='POST' action='/save-flash' class='dirty-guard'>";
+  h += "<input type='hidden' name='_return' value='/timers'>";
   h += "<div class='check'><input type='checkbox' id='marqueeEnabled' name='marqueeEnabled'" + String(cfg.marqueeEnabled ? " checked" : "") +
        "><label for='marqueeEnabled' style='margin:0'>Flash the red screen border until the timer is dismissed</label></div>";
   h += "<label>Pulse rate (ms between on/off)</label><input name='flashRate' value='" + String(cfg.flashPulseRateMs) + "'>";
@@ -4433,8 +4535,8 @@ void handleRoot() {
     if (!anyLights) h += "<div class='muted'>Add light or switch tiles to the Home page first.</div>";
   }
   h += "<button class='primary' type='submit'>Save flash settings</button></form>";
-
-  h += "<h3>Preset buttons</h3><form method='POST' action='/save-timers'>";
+  h += "<h3>Preset buttons</h3><form method='POST' action='/save-timers' class='dirty-guard'>";
+  h += "<input type='hidden' name='_return' value='/timers'>";
   for (int i = 0; i < 5; i++) {
     int mins = cfg.timerPresetSec[i] / 60;
     int secs = cfg.timerPresetSec[i] % 60;
@@ -4447,10 +4549,16 @@ void handleRoot() {
   }
   h += "<button class='primary' type='submit'>Save presets</button></form>";
   h += "<form method='POST' action='/reset-timers' style='margin-top:8px' onsubmit=\"return confirm('Reset all 5 timer presets to 1/5/10/15/30 minutes?');\">";
+  h += "<input type='hidden' name='_return' value='/timers'>";
   h += "<button type='submit'>Reset presets to defaults</button></form>";
   h += "</section>";
+  h += settingsFooter();
+  server.send(200, "text/html", h);
+}
 
-  // ---- Backup & Restore --------------------------------------------
+// GET /backup
+void handleBackupPage() {
+  String h = settingsPageTop("Backup", "backup");
   h += "<section class='card'><h2>Backup &amp; Restore</h2>";
   h += "<div class='seg' id='brSeg'>";
   h += "<button type='button' class='seg-on' data-pane='backup'>Back up</button>";
@@ -4470,24 +4578,12 @@ void handleRoot() {
   h += "<form method='POST' action='/reboot' onsubmit=\"return confirm('Reboot the panel now?');\">";
   h += "<button type='submit'>Reboot panel</button></form>";
   h += "</section>";
-
-  h += sortableScript();
-  h += "<script>(function(){var L=document.getElementById('pageList');"
-       "if(L)makeSortable(L,function(o){postOrder('/page/reorder',o);});})();</script>";
-  // Backup / Restore segmented toggle: show one workflow, hide the other.
   h += "<script>(function(){var s=document.getElementById('brSeg');if(!s)return;"
        "s.addEventListener('click',function(e){var b=e.target.closest('button[data-pane]');if(!b)return;"
        "s.querySelectorAll('button').forEach(function(x){x.classList.toggle('seg-on',x===b);});"
        "document.getElementById('paneBackup').hidden=(b.dataset.pane!=='backup');"
        "document.getElementById('paneRestore').hidden=(b.dataset.pane!=='restore');});})();</script>";
-  // Warn before leaving with unsaved edits in the long settings forms.
-  h += "<script>(function(){var dirty=false;"
-       "document.querySelectorAll('form.dirty-guard').forEach(function(f){"
-       "f.addEventListener('input',function(){dirty=true;});"
-       "f.addEventListener('submit',function(){dirty=false;});});"
-       "window.addEventListener('beforeunload',function(e){if(dirty){e.preventDefault();e.returnValue='';}});})();</script>";
-
-  h += htmlFooter;
+  h += settingsFooter();
   server.send(200, "text/html", h);
 }
 
@@ -4504,7 +4600,8 @@ void handlePageManage() {
   if (!pg) { server.sendHeader("Location", "/"); server.send(303); return; }
 
   String h = pageHeaderHtml(pg->name);
-  h += "<p><a href='/'>&larr; Back to settings</a></p>";
+  h += settingsNav("pages");
+  h += "<p><a href='/pages'>&larr; All pages</a></p>";
   h += "<h1>" + htmlEscape(pg->name) + " tiles</h1>";
 
   int used = 0;
@@ -4608,6 +4705,7 @@ void handleTileEditForm() {
   TileConfig& tl = pg->tiles[idx];
 
   String h = pageHeaderHtml("Edit tile");
+  h += settingsNav("pages");
   h += "<p><a href='/page?id=" + String(pg->id) + "'>&larr; Back to " + htmlEscape(pg->name) + "</a></p>";
   h += "<h1>Edit tile</h1>";
   h += "<form method='POST' action='/tile/update'>";
@@ -4817,8 +4915,7 @@ void handleSaveDevice() {
     }
   }
 
-  server.sendHeader("Location", "/");
-  server.send(303);
+  redirectAfterSave("/");
 }
 
 void handleHaTest() {
@@ -4868,8 +4965,7 @@ void handleSaveNetwork() {
 
     if (err.length()) {
       gSaveNotice = "Network settings not saved - " + err;
-      server.sendHeader("Location", "/");
-      server.send(303);
+      redirectAfterSave("/connection");
       return;
     }
 
@@ -4918,9 +5014,7 @@ void handleSaveFlash() {
   }
 
   saveConfig();
-
-  server.sendHeader("Location", "/");
-  server.send(303);
+  redirectAfterSave("/timers");
 }
 
 void handleSaveTimers() {
@@ -4936,9 +5030,7 @@ void handleSaveTimers() {
 
   saveConfig();
   pageDirty = true; // Timers page may be showing the old preset labels
-
-  server.sendHeader("Location", "/");
-  server.send(303);
+  redirectAfterSave("/timers");
 }
 
 void handleResetTimers() {
@@ -4946,8 +5038,7 @@ void handleResetTimers() {
   saveConfig();
   pageDirty = true;
   gSaveNotice = "Timer presets reset to defaults (1, 5, 10, 15, 30 min).";
-  server.sendHeader("Location", "/");
-  server.send(303);
+  redirectAfterSave("/timers");
 }
 
 String makePageId() {
@@ -4985,7 +5076,7 @@ void handlePageAdd() {
     pageDirty = true;
     saveConfig();
   }
-  server.sendHeader("Location", "/");
+  server.sendHeader("Location", "/pages");
   server.send(303);
 }
 
@@ -5002,7 +5093,7 @@ void handlePageRename() {
       }
     }
   }
-  server.sendHeader("Location", "/");
+  server.sendHeader("Location", "/pages");
   server.send(303);
 }
 
@@ -5021,7 +5112,7 @@ void handlePageDelete() {
       pageDirty = true;
     }
   }
-  server.sendHeader("Location", "/");
+  server.sendHeader("Location", "/pages");
   server.send(303);
 }
 
@@ -5093,9 +5184,21 @@ void handleHaAreaEntities() {
   }
   // Third field = comma-joined member ids for group entities (empty
   // otherwise), so the browser can pre-uncheck members a group covers.
-  String tmpl = "{% for e in area_entities('" + area + "') if e.startswith('" + domain + ".') %}"
-                "{{ e }}|{{ state_attr(e,'friendly_name') or e }}|"
-                "{{ (state_attr(e,'entity_id') or []) | join(',') }}\n{% endfor %}";
+  // Two passes: (1) entities of this domain assigned to the area; (2) light/
+  // switch *group* entities (they expose an `entity_id` member-list attr)
+  // that aren't area-assigned but have at least one member in the area -
+  // so "Kitchen lights" shows up even if the group helper itself has no area.
+  String tmpl =
+    "{% set ar = area_entities('" + area + "') %}"
+    "{% for e in ar if e.startswith('" + domain + ".') %}"
+    "{{ e }}|{{ state_attr(e,'friendly_name') or e }}|{{ (state_attr(e,'entity_id') or []) | join(',') }}\n"
+    "{% endfor %}"
+    "{% for e in states." + domain + " | map(attribute='entity_id') | list %}"
+    "{% set m = state_attr(e,'entity_id') %}"
+    "{% if m and e not in ar and (m | select('in', ar) | list) %}"
+    "{{ e }}|{{ state_attr(e,'friendly_name') or e }}|{{ m | join(',') }}\n"
+    "{% endif %}"
+    "{% endfor %}";
   String out;
   if (!haRenderTemplate(tmpl, out)) { server.send(502, "text/plain", ""); return; }
   server.send(200, "text/plain; charset=utf-8", out);
@@ -5286,7 +5389,7 @@ void handlePageSetHidden() {
       pageDirty = true;
     }
   }
-  server.sendHeader("Location", "/");
+  server.sendHeader("Location", "/pages");
   server.send(303);
 }
 
@@ -5302,7 +5405,7 @@ void handlePageOrderReset() {
     for (int t = 0; t < MAX_TILES; t++) tileRuntime[p][t] = TileRuntime();
   saveConfig();
   pageDirty = true;
-  server.sendHeader("Location", "/");
+  server.sendHeader("Location", "/pages");
   server.send(303);
 }
 
@@ -5472,6 +5575,11 @@ void setupWebServer() {
   }
 
   server.on("/", handleRoot);
+  server.on("/panel", handlePanelPage);
+  server.on("/connection", handleConnectionPage);
+  server.on("/pages", handlePagesPage);
+  server.on("/timers", handleTimersSettingsPage);
+  server.on("/backup", handleBackupPage);
   server.on("/ha-test", handleHaTest);
   server.on("/page", handlePageManage);
   server.on("/save-device", HTTP_POST, handleSaveDevice);
