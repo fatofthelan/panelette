@@ -2833,6 +2833,58 @@ int actionFlashTile = -1;
 unsigned long actionFlashStartMs = 0;
 const unsigned long ACTION_FLASH_MS = 550;
 
+// Local (no-HA) control tiles: "powersave" and "backlight". Styled like a
+// switch tile. Tap handling is in handleTileTap(); state lives in cfg + the
+// backlight module.
+void drawLocalTileSprite(int tileIdx, int x, int y, int w, int h, bool force, bool isPowerSave) {
+  TileConfig& tl = cfg.pages[currentPageIndex].tiles[tileIdx];
+  TileRuntime& rt = tileRuntime[currentPageIndex][tileIdx];
+
+  bool active = false;
+  String value, corner;
+  if (isPowerSave) {
+    active = cfg.powerSave;
+    value = active ? "On" : "Off";
+  } else {
+    const char* m = cfg.backlightMode;
+    value = (strcmp(m, "manual") == 0) ? "Manual" : (strcmp(m, "schedule") == 0) ? "Sched" : "Sensor";
+    if (w >= 160) corner = String(((gBlTargetPct + 2) / 5) * 5) + "%"; // wide only; nearest 5% so it doesn't churn
+  }
+  String label = strlen(tl.label) ? String(tl.label) : String(isPowerSave ? "Power Save" : "Bright");
+
+  String key = String(isPowerSave ? "PS|" : "BL|") + label + "|" + value + "|" + corner + "|" +
+               String(active ? 1 : 0) + "|" + String(COL_PANEL) + "|" + String(COL_ACCENT);
+  if (!force && key == rt.cacheKey) return;
+  rt.cacheKey = key;
+
+  uint16_t bg = active ? COL_PANEL_LIT : COL_PANEL;
+  makeSpriteCard(sprTile, w, h, active ? (int)COL_PANEL_LIT : -1);
+  if (active) uiStrokeRR(sprTile, 0, 0, w, h, gCardRadius, COL_ACCENT, bg);
+
+  const int pad = 12;
+  drawTileLabel(sprTile, label, pad, w, w - pad - (corner.length() ? 32 : 6), bg);
+
+  bool shortVal = value.length() <= 4;
+  int vFont = shortVal ? (cfg.uiFontSize == 0 ? 2 : 4) : 2;
+  sprTile.setTextColor(active ? COL_ACCENT : COL_TEXT, bg);
+  int vy = h - (vFont == 4 ? 36 : 27);
+  uiDrawFitted(sprTile, value, pad, vy, w - pad - 26, vFont);
+  sprTile.setTextDatum(TL_DATUM);
+
+  if (corner.length()) {
+    sprTile.setTextDatum(TR_DATUM);
+    sprTile.setTextColor(COL_DIM, bg);
+    uiDrawString(sprTile, corner, w - pad, 9, 1);
+    sprTile.setTextDatum(TL_DATUM);
+  }
+
+  int ix = w - 19, iy = h - 19;
+  if (isPowerSave) drawMiniSwitch(sprTile, ix, iy, active, COL_ACCENT, bg);
+  else             drawMiniBulb(sprTile, ix, iy, gBlTargetPct >= 60, COL_ACCENT, bg);
+
+  pushSpriteAndDelete(sprTile, x, y);
+}
+
 void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   if (slot < 0) return;
   PageConfig& pg = cfg.pages[currentPageIndex];
@@ -2858,6 +2910,8 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   if (strcmp(tl.type, "sun") == 0)     { drawSunTileSprite(tileIdx, x, y, w, h, wide, force, 2); return; }
   if (strcmp(tl.type, "date") == 0)     { drawDateTileSprite(tileIdx, x, y, w, h, wide, force, tl.dateEuro, 0); return; }
   if (strcmp(tl.type, "datewide") == 0) { drawDateTileSprite(tileIdx, x, y, w, h, wide, force, tl.dateEuro, 1); return; }
+  if (strcmp(tl.type, "powersave") == 0) { drawLocalTileSprite(tileIdx, x, y, w, h, force, true);  return; }
+  if (strcmp(tl.type, "backlight") == 0) { drawLocalTileSprite(tileIdx, x, y, w, h, force, false); return; }
 
   bool isAction = (strcmp(tl.type, "scene") == 0 || strcmp(tl.type, "script") == 0 ||
                    strcmp(tl.type, "button") == 0);
@@ -3133,8 +3187,9 @@ const int STATUS_BTN_H     = 34;
 const int STATUS_BTN_FULL_X = 12, STATUS_BTN_FULL_W = 216;
 const int STATUS_BTN_L_X   = 12,  STATUS_BTN_HALF_W = 103;
 const int STATUS_BTN_R_X   = 125;
-const int STATUS_ROW1_BTN_Y = STATUS_INFO_Y0 + 4 * STATUS_ROW_H + 18; // 180  (Theme | Flip)
-const int STATUS_ROW2_BTN_Y = STATUS_ROW1_BTN_Y + STATUS_BTN_H + 12;  // 226  (Reboot); bottom 260
+const int STATUS_ROW1_BTN_Y = STATUS_INFO_Y0 + 4 * STATUS_ROW_H + 4;  // 166  (Theme | Flip)
+const int STATUS_ROW2_BTN_Y = STATUS_ROW1_BTN_Y + STATUS_BTN_H + 12;  // 212  (Reboot); bottom 246
+// version footer sits at ROW2 + BTN_H + 4 = 250; footer starts at 276
 
 void drawStatusButton(int bx, int by, int bw, const String& label, bool danger) {
   uint16_t fill = danger ? fixColor565(0xF36D) : COL_PANEL;
@@ -3185,7 +3240,7 @@ void drawStatusPageFull() {
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_DIM, COL_BG);
   uiDrawString(tft, String(FW_NAME) + "  v" + FW_VERSION,
-               SCREEN_W / 2, STATUS_ROW2_BTN_Y + STATUS_BTN_H + 3, 1);
+               SCREEN_W / 2, STATUS_ROW2_BTN_Y + STATUS_BTN_H + 4, 1);
   tft.setTextDatum(TL_DATUM);
 }
 
@@ -3522,6 +3577,27 @@ void handleTileTap(int tileIdx) {
   }
 
   TileRuntime& rt = tileRuntime[currentPageIndex][tileIdx];
+
+  // Local control tiles - no HA, no entity. Tap toggles / cycles, saves, redraws.
+  bool isPowerSave = (strcmp(tl.type, "powersave") == 0);
+  bool isBacklight = (strcmp(tl.type, "backlight") == 0);
+  if (isPowerSave || isBacklight) {
+    if (isPowerSave) {
+      cfg.powerSave = !cfg.powerSave;
+    } else {
+      const char* m = cfg.backlightMode;
+      const char* next = (strcmp(m, "manual") == 0) ? "schedule"
+                       : (strcmp(m, "schedule") == 0) ? "sensor" : "manual";
+      strlcpy(cfg.backlightMode, next, sizeof(cfg.backlightMode));
+    }
+    gLastInteractionMs = millis();
+    saveConfig();
+    rt.cacheKey = "";
+    int slotOfTap[MAX_TILES];
+    layoutPageTiles(pg, slotOfTap);
+    drawTileSprite(tileIdx, slotOfTap[tileIdx], tl.size == 2, true);
+    return;
+  }
 
   if (strlen(tl.entityId) == 0 || !haConfigured()) return;
   if (strcmp(tl.type, "sensor") == 0) return; // read-only
@@ -4473,10 +4549,12 @@ void handlePageManage() {
     h += "<option value='sun'>Sunrise + Sunset (use a wide tile)</option>";
     h += "<option value='date'>Date (8/30/2026)</option>";
     h += "<option value='datewide'>Date + weekday (use a wide tile)</option>";
+    h += "<option value='backlight'>Screen brightness (tap cycles mode)</option>";
+    h += "<option value='powersave'>Power save (tap toggles)</option>";
     h += "</select>";
     h += "<label>Label</label><input name='label' placeholder='e.g. Bedside Lamp'>";
     h += "<div class='check'><input type='checkbox' id='dateEuro' name='dateEuro'><label for='dateEuro' style='margin:0'>Date tiles: day/month order (30/8/2026) &mdash; unchecked is US month/day</label></div>";
-    h += "<label>Entity ID (not used for Weather / Timer / Sun / Date tiles)</label>";
+    h += "<label>Entity ID (not used for Weather / Timer / Sun / Date / Brightness / Power save tiles)</label>";
     h += "<input name='entityId' list='entlist' autocomplete='off' placeholder='e.g. light.living_room_lamp'>";
     h += "<datalist id='entlist'></datalist>";
     h += "<div class='muted' id='entHint'></div>";
@@ -4537,14 +4615,16 @@ void handleTileEditForm() {
   h += "<input type='hidden' name='index' value='" + String(idx) + "'>";
 
   h += "<label>Type</label><select name='type'>";
-  const char* types[13] = {"light", "switch", "sensor", "scene", "script", "button",
-                           "weather", "timer", "sunrise", "sunset", "sun", "date", "datewide"};
-  const char* typeLabels[13] = {"Light (toggle + dim)", "Switch (toggle only)", "Sensor (read-only)",
+  const char* types[15] = {"light", "switch", "sensor", "scene", "script", "button",
+                           "weather", "timer", "sunrise", "sunset", "sun", "date", "datewide",
+                           "backlight", "powersave"};
+  const char* typeLabels[15] = {"Light (toggle + dim)", "Switch (toggle only)", "Sensor (read-only)",
                                 "Scene (tap to activate)", "Script (tap to run)", "Button (tap to press)",
                                 "Weather (icon + temperature)", "Timer (countdown status)",
                                 "Sunrise time", "Sunset time", "Sunrise + Sunset (use a wide tile)",
-                                "Date (8/30/2026)", "Date + weekday (use a wide tile)"};
-  for (int i = 0; i < 13; i++) {
+                                "Date (8/30/2026)", "Date + weekday (use a wide tile)",
+                                "Screen brightness (tap cycles mode)", "Power save (tap toggles)"};
+  for (int i = 0; i < 15; i++) {
     h += "<option value='" + String(types[i]) + "'";
     if (strcmp(tl.type, types[i]) == 0) h += " selected";
     h += ">" + String(typeLabels[i]) + "</option>";
@@ -4554,7 +4634,7 @@ void handleTileEditForm() {
   h += "<label>Label</label><input name='label' value='" + htmlEscape(tl.label) + "'>";
   h += "<div class='check'><input type='checkbox' id='dateEuro' name='dateEuro'" + String(tl.dateEuro ? " checked" : "") +
        "><label for='dateEuro' style='margin:0'>Date tiles: day/month order (30/8/2026) &mdash; unchecked is US month/day</label></div>";
-  h += "<label>Entity ID (not used for Weather / Timer / Sun / Date tiles)</label>";
+  h += "<label>Entity ID (not used for Weather / Timer / Sun / Date / Brightness / Power save tiles)</label>";
   h += "<input name='entityId' list='entlist' autocomplete='off' value='" + htmlEscape(tl.entityId) + "'>";
   h += "<datalist id='entlist'></datalist>";
   h += "<div class='muted' id='entHint'></div>";
