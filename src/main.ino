@@ -3992,6 +3992,10 @@ String pageHeaderHtml(const String& title) {
   h += ".check input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent);}";
   h += ".check input[type=checkbox]:checked::before{transform:translateX(18px);background:#0b1f28;}";
   h += ".check input[type=checkbox]:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}";
+  // Compact toggle - used inline in tight rows (e.g. the Pages list).
+  h += ".check.sm input[type=checkbox]{width:34px;height:20px;}";
+  h += ".check.sm input[type=checkbox]::before{width:14px;height:14px;top:2px;left:2px;}";
+  h += ".check.sm input[type=checkbox]:checked::before{transform:translateX(14px);}";
   h += "input,select{padding:10px 12px;margin:0;width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:14px;font-family:var(--font);}";
   h += "input:focus,select:focus{outline:none;border-color:var(--accent);}";
   h += "button{padding:9px 16px;margin:10px 6px 0 0;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-family:var(--font);cursor:pointer;}";
@@ -4447,7 +4451,7 @@ void handlePagesPage() {
     String id = String(pg.id);
     if (i == 1) h += "<div id='pageList' class='sortable'>";
     bool tilePage = (isHome || strcmp(pg.type, "area") == 0);
-    h += "<div class='row' data-item='" + id + "'>";
+    h += "<div class='row' data-item='" + id + "' style='margin:14px 0'>";
 
     // Title line: drag handle + name/meta on the left, Hide toggle on the right.
     h += "<div style='display:flex;align-items:center;gap:8px'>";
@@ -4461,24 +4465,24 @@ void handlePagesPage() {
     if (pageCanHide(pg.type)) {
       h += "<form method='POST' action='/page/set-hidden' style='margin:0'>";
       h += "<input type='hidden' name='id' value='" + id + "'>";
-      h += "<label class='check' style='margin:0;gap:8px' title='Hide from the panel&#39;s swipe nav + footer'>";
-      h += "<span class='muted' style='font-size:12px'>Hide</span>";
+      h += "<label class='check sm' style='margin:0;gap:7px' title='Hide from the panel&#39;s swipe nav + footer'>";
+      h += "<span class='muted' style='font-size:11px;letter-spacing:.04em'>HIDE</span>";
       h += "<input type='checkbox' name='hidden' onchange='this.form.submit()'" + String(pg.hidden ? " checked" : "") + ">";
       h += "</label></form>";
     }
     h += "</div>";
 
     // Actions line.
-    h += "<div style='margin-top:8px'>";
-    h += "<a href='/page?id=" + id + "'>Manage tiles</a> &nbsp; ";
-    h += "<form style='display:inline' method='POST' action='/page/rename'>";
+    h += "<div style='margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:14px'>";
+    h += "<a href='/page?id=" + id + "'>Manage tiles</a>";
+    h += "<form style='display:flex;gap:6px;margin:0' method='POST' action='/page/rename'>";
     h += "<input type='hidden' name='id' value='" + id + "'>";
-    h += "<input style='width:110px;display:inline-block' name='name' value='" + htmlEscape(pg.name) + "'>";
-    h += "<button type='submit'>Rename</button></form>";
+    h += "<input style='width:110px' name='name' value='" + htmlEscape(pg.name) + "'>";
+    h += "<button type='submit' style='margin:0'>Rename</button></form>";
     if (pg.deletable) {
-      h += " <form style='display:inline' method='POST' action='/page/delete' onsubmit=\"return confirm('Delete this page and its tiles?');\">";
+      h += "<form style='margin:0' method='POST' action='/page/delete' onsubmit=\"return confirm('Delete this page and its tiles?');\">";
       h += "<input type='hidden' name='id' value='" + id + "'>";
-      h += "<button class='danger' type='submit'>Delete</button></form>";
+      h += "<button class='danger' type='submit' style='margin:0'>Delete</button></form>";
     }
     h += "</div>";
 
@@ -5180,9 +5184,21 @@ void handleHaAreaEntities() {
   }
   // Third field = comma-joined member ids for group entities (empty
   // otherwise), so the browser can pre-uncheck members a group covers.
-  String tmpl = "{% for e in area_entities('" + area + "') if e.startswith('" + domain + ".') %}"
-                "{{ e }}|{{ state_attr(e,'friendly_name') or e }}|"
-                "{{ (state_attr(e,'entity_id') or []) | join(',') }}\n{% endfor %}";
+  // Two passes: (1) entities of this domain assigned to the area; (2) light/
+  // switch *group* entities (they expose an `entity_id` member-list attr)
+  // that aren't area-assigned but have at least one member in the area -
+  // so "Kitchen lights" shows up even if the group helper itself has no area.
+  String tmpl =
+    "{% set ar = area_entities('" + area + "') %}"
+    "{% for e in ar if e.startswith('" + domain + ".') %}"
+    "{{ e }}|{{ state_attr(e,'friendly_name') or e }}|{{ (state_attr(e,'entity_id') or []) | join(',') }}\n"
+    "{% endfor %}"
+    "{% for e in states." + domain + " | map(attribute='entity_id') | list %}"
+    "{% set m = state_attr(e,'entity_id') %}"
+    "{% if m and e not in ar and (m | select('in', ar) | list) %}"
+    "{{ e }}|{{ state_attr(e,'friendly_name') or e }}|{{ m | join(',') }}\n"
+    "{% endif %}"
+    "{% endfor %}";
   String out;
   if (!haRenderTemplate(tmpl, out)) { server.send(502, "text/plain", ""); return; }
   server.send(200, "text/plain; charset=utf-8", out);
