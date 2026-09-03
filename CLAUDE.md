@@ -408,11 +408,20 @@ earlier in the file) touch them - the auto-prototype gotcha.
   `TileRuntime.unavailable` (not persisted) - set from the HA `state`
   string; the tile shows "N/A" + a struck-through icon. `backlight*` /
   `ldr*` / `powerSave*` - the auto-dim feature (see the Backlight section).
-- **The Device / Home Assistant / Weather / Display&Power cards are separate
-  `<form>`s** that all POST `/save-device`. `handleSaveDevice()` gates each
-  card's writes behind a field unique to that form (`deviceName` / `haUrl` /
-  `weatherName` / `backlightMode`) so a partial submit can't clear the
-  others. Same trick in `handleSaveFlash()` (gated on `flashRate`).
+- **Web UI is multi-page**: `/` (Overview - status + Screenshot/Reboot/Test),
+  `/device`, `/appearance` (theme + Display&Power), `/connection` (HA +
+  Weather + Network + Wi-Fi), `/pages`, `/timers`, `/backup`. Shared header
+  via `settingsPageTop(title, navKey)` (heading + `settingsNav()` pill bar +
+  one-shot `gSaveNotice`) and `settingsFooter()` (dirty-guard + close). Split
+  keeps the biggest single response ~7-11 KB instead of one ~40 KB page.
+- **Several cards still POST `/save-device`** (Device, Theme, Home Assistant,
+  Weather, Display&Power). `handleSaveDevice()` gates each card's writes
+  behind a field unique to its form (`deviceName` / `haUrl` / `weatherName` /
+  `backlightMode`; theme/`uiFontSize` fields aren't gated - safe from any
+  form). Same trick in `handleSaveFlash()` (gated on `flashRate`).
+- Every `/save-*` form carries a hidden `_return`; `redirectAfterSave(fallback)`
+  303s back to that section (rejects any non-`/` value). `/page*` handlers
+  redirect to `/pages`.
 - Web UI checkboxes render as coloured on/off **toggle switches** (CSS
   `appearance:none` on `.check input[type=checkbox]`); radios are unchanged.
   Backup & Restore is a **segmented Back up / Restore control** (`.seg`,
