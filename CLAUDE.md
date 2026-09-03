@@ -493,8 +493,11 @@ earlier in the file) touch them - the auto-prototype gotcha.
   sends a Jinja template, gets back short `id|name` lines. Endpoints on the
   panel's own web server (consumed by JS in the tile forms):
   `/ha/entities?domain=`, `/ha/areas`, `/ha/area-entities?area=&domain=`.
-  The area one's 3rd field is a group's comma-joined member ids, so the
-  browser can pre-uncheck members a group already covers.
+  `area-entities` is two passes: domain entities assigned to the area, then
+  light/switch *group* entities (they carry an `entity_id` member-list attr)
+  with a member in the area but no area of their own. 3rd field is that
+  member list; the browser sorts groups first and pre-unchecks covered
+  members (`e not in ar` guard stops a group appearing twice).
 - **Every HA-assisted feature falls back to manual entry** on any failure -
   the tile forms keep a plain text field, the settings page keeps manual
   timezone/location, etc. Assume templates/areas() behave per current HA;
