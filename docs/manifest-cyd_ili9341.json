@@ -1,0 +1,16 @@
+{
+  "name": "Panelette",
+  "version": "1.0.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/cyd_ili9341/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/cyd_ili9341/partitions.bin", "offset": 32768 },
+        { "path": "firmware/cyd_ili9341/boot_app0.bin",  "offset": 57344 },
+        { "path": "firmware/cyd_ili9341/firmware.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}

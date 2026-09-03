@@ -100,6 +100,13 @@ const char* HA_URL_DEFAULT = "http://homeassistant.local:8123";
 #define FW_NAME    "Panelette"
 #define FW_VERSION "1.0.0"
 
+// Which CYD panel this build targets - set per-env in platformio.ini. Printed
+// in the serial banner and shown on the Status page so a wrong-panel flash is
+// identifiable (the CYD ships several different displays - see platformio.ini).
+#ifndef PANEL_VARIANT
+#define PANEL_VARIANT "?"
+#endif
+
 // Timers-page preset buttons, in seconds: 1 / 5 / 10 / 15 / 30 min.
 const int DEFAULT_TIMER_PRESETS_SEC[5] = {60, 300, 600, 900, 1800};
 
@@ -3970,7 +3977,8 @@ String sortableScript() {
 void handleRoot() {
   String h = pageHeaderHtml("Panelette Settings");
   h += "<h1>PANELETTE <span class='dim'>&mdash; " + htmlEscape(cfg.deviceName) + "</span></h1>";
-  h += "<div class='muted' style='margin:-2px 0 8px'>v" FW_VERSION "</div>";
+  h += "<div class='muted' style='margin:-2px 0 8px'>v" FW_VERSION
+       "  &middot;  " PANEL_VARIANT " panel</div>";
 
   if (gSaveNotice.length() > 0) {
     h += "<div class='notice'>" + htmlEscape(gSaveNotice) + "</div>";
@@ -5255,7 +5263,8 @@ void setup() {
   delay(20);
   for (int i = 0; i < 6; i++) { IMPROV_BOOT_ANNOUNCE(); delay(20); }
 
-  Serial.printf("\n=== %s %s  (build %s %s) ===\n", FW_NAME, FW_VERSION, __DATE__, __TIME__);
+  Serial.printf("\n=== %s %s  (%s panel, build %s %s) ===\n",
+                FW_NAME, FW_VERSION, PANEL_VARIANT, __DATE__, __TIME__);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
   analogWrite(BACKLIGHT_PIN, 255);

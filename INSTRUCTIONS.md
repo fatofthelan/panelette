@@ -16,10 +16,15 @@ kitchen-style timers that can flash your lights when they finish.
 
 ### Easiest - browser installer (no IDE)
 Open **https://fatofthelan.github.io/panelette/** in **Chrome, Edge, or
-Opera on a computer**, plug the board into USB, and click **Install**. It
-flashes the firmware and then asks for your Wi-Fi. That's it - skip the
-rest of this guide and jump to [Step 8](#step-8---connect-the-panel-to-home-assistant)
-to connect Home Assistant.
+Opera on a computer**, pick your **display panel** (leave it on the default
+if unsure), plug the board into USB, and click **Install**. It flashes the
+firmware and then asks for your Wi-Fi. That's it - skip the rest of this
+guide and jump to [Step 8](#step-8---connect-the-panel-to-home-assistant) to
+connect Home Assistant.
+
+If the screen comes up white, garbled, or with wrong colours, the board has
+a different display than the default - reconnect, pick another panel option,
+and install again.
 
 On a phone, or using Safari/Firefox? Flash from a desktop but **skip** the
 Wi-Fi prompt - the panel comes up as its own `PaneletteXXXX` Wi-Fi network

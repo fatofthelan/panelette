@@ -36,7 +36,7 @@ build-config changes.
   `[panel]`. Read its header comment before
   changing `build_flags` or `lib_deps`.
 - `docs/` - the GitHub Pages site: `index.html` (ESP Web Tools install
-  page), `manifest.json`, and `firmware/*.bin` (the four flash parts).
+  page), `manifest-<env>.json`, and `firmware/<env>/*.bin` per panel variant.
   `tools/build-installer.sh` regenerates them; `.github/workflows/release.yml`
   runs that on a `v*` tag and cuts a Release.
 
@@ -471,16 +471,25 @@ they render jagged.
 
 ## Browser installer (ESP Web Tools)
 
-- Shipped. `docs/index.html` + `docs/manifest.json` + `docs/firmware/*.bin`,
-  served by GitHub Pages (`main/docs` after the feature branch merges).
+- Shipped. `docs/index.html` served by GitHub Pages (`main/docs`).
+- **One build per panel variant.** `docs/manifest-<env>.json` +
+  `docs/firmware/<env>/` for each of `esp32dev` / `cyd_ili9341` / `cyd_st7789`
+  (`docs/manifest.json` is a copy of the `esp32dev` one, for back-compat +
+  the page's version fetch). `index.html` has a `<select>` that swaps the
+  `<esp-web-install-button>`'s `manifest` attribute (read at click time).
+  Default is `cyd_st7789`; the picker copy tells users to re-flash with
+  another option if the screen is wrong.
 - **Multi-part manifest** (four parts at their offsets), NOT a merged
   single `.bin` - so an ESP Web Tools *update* writes only those regions
   and leaves NVS (Wi-Fi creds) + the LittleFS config partition alone. A
   first install still full-erases (`new_install_prompt_erase: true`).
-- `tools/build-installer.sh` builds with `secrets.h` moved aside and stages
-  the parts. `.github/workflows/release.yml` runs it on a `v*` tag,
-  verifies the tag matches `FW_VERSION`, commits the refreshed `docs/` to
-  `main`, and cuts a Release.
+- `tools/build-installer.sh` builds all three envs with `secrets.h` moved
+  aside and stages `docs/firmware/<env>/` + the manifests.
+  `.github/workflows/release.yml` runs it on a `v*` tag, verifies the tag
+  matches `FW_VERSION`, commits the refreshed `docs/` to `main`, and cuts a
+  Release (shared parts once + `<env>-firmware.bin` per variant).
+- `PANEL_VARIANT` (`-D` per env) shows in the serial boot banner and the
+  web UI header - so a wrong-panel flash is identifiable.
 
 ## What's genuinely unresolved / open
 

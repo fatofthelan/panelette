@@ -43,7 +43,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout main
-          git add docs/manifest.json docs/firmware
+          git add docs/manifest*.json docs/firmware
           if git diff --cached --quiet; then
             echo "docs/ unchanged"
           else
@@ -51,12 +51,19 @@ jobs:
             git push origin main
           fi
 
+      # Flatten to unique names - the shared parts are identical across variants.
+      - name: Package release assets
+        run: |
+          mkdir -p release
+          cp docs/firmware/esp32dev/bootloader.bin release/
+          cp docs/firmware/esp32dev/partitions.bin release/
+          cp docs/firmware/esp32dev/boot_app0.bin  release/
+          for e in esp32dev cyd_ili9341 cyd_st7789; do
+            cp "docs/firmware/$e/firmware.bin" "release/$e-firmware.bin"
+          done
+
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            docs/firmware/bootloader.bin
-            docs/firmware/partitions.bin
-            docs/firmware/boot_app0.bin
-            docs/firmware/firmware.bin
+          files: release/*.bin
