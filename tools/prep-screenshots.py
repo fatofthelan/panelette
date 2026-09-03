@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Turn raw Panelette /screenshot.bmp captures into doc-ready PNGs.
+"""Turn 240x320 panel captures (24-bit BMP) into doc-ready PNGs.
 
   tools/prep-screenshots.py IN.bmp [IN.bmp ...] --out DIR [--scale N]
   tools/prep-screenshots.py --strip A.bmp B.bmp C.bmp --out FILE.png [--scale N]
 
 Nearest-neighbour upscale (keeps the pixels crisp), pure stdlib - no Pillow.
-Reads 24-bit uncompressed BMPs (what the device serves), writes PNG.
+Used to regenerate docs/img/ from raw captures.
 """
 import struct, zlib, sys, os, argparse
 
