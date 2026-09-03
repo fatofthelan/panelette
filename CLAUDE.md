@@ -304,6 +304,10 @@ earlier in the file) touch them - the auto-prototype gotcha.
   toward it every ~16 ms - fast on wake (0.5 %/ms), gentle otherwise (0.05).
 - Web UI: **"Display & Power" card** (own `<form>`, gated on `backlightMode`
   in `handleSaveDevice()`).
+- **On-device tiles** (`drawLocalTileSprite()`, local - no HA/entity/poll):
+  `powersave` (1x1, tap toggles `cfg.powerSave`) and `backlight` (1x1/1x2,
+  tap cycles `manual->schedule->sensor`; wide shows the current level %).
+  Both `saveConfig()` + wake the screen on tap.
 
 ## Wi-Fi credentials & on-device setup
 

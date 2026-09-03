@@ -326,7 +326,8 @@ Changes take effect on the panel immediately.
   (*Schedule*), or follow the room's light via the onboard sensor
   (*Sensor* - use "Set dark / bright point" to calibrate it). Separately,
   **Power save** dims or blanks the screen after an idle timeout; the first
-  tap just wakes it.
+  tap just wakes it. Both can also be placed on a page as tiles (add a
+  *Screen brightness* or *Power save* tile) - tap to cycle mode / toggle.
 
 ---
 

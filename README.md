@@ -17,7 +17,8 @@ configured from a built-in web UI — no YAML, no HA add-on.
 
 - **Tiles**: light (tap = toggle, hold = large brightness slider), switch,
   sensor, scene / script / button, weather, timer, sunrise / sunset,
-  date / weekday. Unavailable entities show **N/A** with a struck-through icon.
+  date / weekday, plus on-device **screen brightness** and **power save**
+  toggles. Unavailable entities show **N/A** with a struck-through icon.
 - **Pages**: up to 8, 2×3 tile grid each (wide 1×2 tiles supported), swipe
   or footer-icon navigation, per-page hide, drag-to-reorder.
 - **Forecast page**: 5-day weather from Open-Meteo (no API key).
