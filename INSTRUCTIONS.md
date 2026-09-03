@@ -39,13 +39,21 @@ browser installer won't work for you. You get the same firmware.
 ## What you need (build from source)
 
 ### Hardware
-- An **ESP32-2432S028R** board (the common "CYD" / Cheap Yellow Display, the
-  2.8" resistive-touch version). This firmware is tuned for that exact board.
-  The one this project was built and tested on:
-  [amzn.to/4h9kKCf](https://amzn.to/4h9kKCf) (Amazon affiliate link).
-- A **USB data cable** that fits the board (micro-USB or USB-C depending on
-  your revision). Many cheap cables are charge-only and will not work - if
-  the board doesn't show up as a serial port, try another cable first.
+- A 2.8" **resistive-touch "CYD"** (`ESP32-2432S028R`). That label covers
+  several different display panels, so there's a build (and browser-installer
+  option) per panel. **Verified boards:**
+
+  | Board | Panel | Build env / installer option |
+  | --- | --- | --- |
+  | [ELEGOO 2-pack, USB-C](https://amzn.to/4dhlNyx) &mdash; **recommended** | ILI9341 | `cyd_ili9341` (the default) |
+  | [This ST7789 board](https://amzn.to/4h9kKCf) | ST7789 (colour-inverted) | `esp32dev` |
+
+  *Amazon affiliate links.* Other ST7789 CYDs use `cyd_st7789`. If you already
+  own a CYD, flash the default first; if the screen is white or the colours
+  are wrong, try another option.
+- A **USB data cable** that fits the board (USB-C or micro-USB depending on
+  the model). Many cheap cables are charge-only and will not work - if the
+  board doesn't show up as a serial port, try another cable first.
 - A computer (Windows, macOS, or Linux) for the one-time flashing step.
 
 A fresh unit names itself `PaneletteXXXX` (the last 4 hex digits of its MAC),
@@ -56,12 +64,13 @@ so two on one network won't clash. You can rename it in the web UI.
 - The **PlatformIO IDE** extension for VS Code (installed from inside VS Code,
   steps below)
 - **USB serial driver** - only some setups need this:
-  - The CYD uses a **CH340** USB chip.
+  - Most CYDs use a **CH340** USB chip; some USB-C boards use a **CP2102**.
   - **Linux:** usually works out of the box.
   - **macOS / Windows:** if the board doesn't appear as a serial port after
     plugging it in, install the CH340 driver from
     https://www.wch-ic.com/downloads/CH341SER_ZIP.html (Windows) or
     https://github.com/WCHSoftGroup/ch34xser_macos (macOS), then reboot.
+    For a CP2102 board use Silicon Labs' CP210x driver instead.
 
 ### Home Assistant
 - A running Home Assistant instance on the **same network** as the panel.
@@ -146,18 +155,25 @@ Leave the `:8123` port unless you've changed it. Save the file.
 ## Step 5 - Flash the panel
 
 1. Plug the CYD into your computer with the USB **data** cable.
-2. At the bottom of the VS Code window, in the blue PlatformIO status bar,
-   click the **-> (right arrow)** icon - "PlatformIO: Upload".
-   - First build downloads more libraries and takes a few minutes.
-     Subsequent builds are ~10 seconds.
-3. Watch the terminal at the bottom. Success ends with:
+2. **Pick the build for your panel.** The default is `cyd_ili9341` (the
+   recommended ELEGOO board). For a different panel, open the PlatformIO
+   sidebar (the alien-head icon) -> **Project Tasks**, expand the env you
+   want (`cyd_st7789` or `esp32dev`), and use its **Upload** there instead of
+   the status-bar button - or change `default_envs` at the top of
+   `platformio.ini`. That file's header has a screen-symptom guide.
+3. Flash it: at the bottom of the VS Code window, in the blue PlatformIO
+   status bar, click the **-> (right arrow)** icon - "PlatformIO: Upload"
+   (this uses the default env). First build downloads libraries and takes a
+   few minutes; later ones are ~10 seconds.
+4. Watch the terminal at the bottom. Success ends with:
    ```
    Writing at 0x... (100 %)
    Hash of data verified.
    [SUCCESS]
    ```
-4. The panel reboots on its own and shows the **Home** screen with a clock
-   (or the **Wi-Fi setup** screen if you skipped Step 3).
+5. The panel reboots on its own and shows the **Home** screen with a clock
+   (or the **Wi-Fi setup** screen if you skipped Step 3). If it's white or
+   the colours look wrong, flash a different env (step 2).
 
 If upload fails, see **Troubleshooting** below.
 

@@ -85,13 +85,13 @@ CGRAM pixel offset. Wrong driver = garbled or blank (usually white) screen with
 **no compile error**. `platformio.ini` has one env per known variant - the pin
 map is shared (`[panel] common_flags`); only the driver / colour flags differ:
 
-- **`[env:esp32dev]`** - the original board this project was built on: ST7789 +
-  `TFT_BGR` + `PANEL_INVERT_COLORS` (the bitwise-complement quirk, below). This
-  is the env CI ships in the browser installer.
-- **`[env:cyd_ili9341]`** - ELEGOO and other ILI9341 CYDs: `ILI9341_2_DRIVER`
-  (the alt init table CYD folks use for white-screen ILI9341s) + `TFT_BGR`, no
-  inversion.
+- **`[env:cyd_ili9341]`** - `default_envs`. ELEGOO (verified) + other ILI9341
+  CYDs: `ILI9341_2_DRIVER` (the alt init table CYD folks use for white-screen
+  ILI9341s) + `TFT_BGR`, no inversion.
 - **`[env:cyd_st7789]`** - "normal" ST7789 CYDs: ST7789 + `TFT_BGR`, no inversion.
+- **`[env:esp32dev]`** - the original dev board: ST7789 + `TFT_BGR` +
+  `PANEL_INVERT_COLORS` (the bitwise-complement quirk, below). Only this board
+  (verified) is known to need it.
 
 Flash a matching env: `pio run -e cyd_ili9341 -t upload`. Symptom guide is in
 `platformio.ini`'s header comment. **Touch calibration (`TOUCH_*_MIN/MAX` in
@@ -477,8 +477,8 @@ they render jagged.
   (`docs/manifest.json` is a copy of the `esp32dev` one, for back-compat +
   the page's version fetch). `index.html` has a `<select>` that swaps the
   `<esp-web-install-button>`'s `manifest` attribute (read at click time).
-  Default is `cyd_st7789`; the picker copy tells users to re-flash with
-  another option if the screen is wrong.
+  Default is `cyd_ili9341` (the recommended ELEGOO board); the picker copy
+  tells users to re-flash with another option if the screen is wrong.
 - **Multi-part manifest** (four parts at their offsets), NOT a merged
   single `.bin` - so an ESP Web Tools *update* writes only those regions
   and leaves NVS (Wi-Fi creds) + the LittleFS config partition alone. A

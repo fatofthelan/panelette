@@ -107,16 +107,16 @@
     <div class="picker">
       <label for="board">Your display panel</label>
       <select id="board">
-        <option value="./manifest-cyd_st7789.json" selected>Standard CYD &mdash; ST7789 panel</option>
-        <option value="./manifest-cyd_ili9341.json">ELEGOO / older CYD &mdash; ILI9341 panel</option>
-        <option value="./manifest.json">ST7789, but colours look inverted with the first option</option>
+        <option value="./manifest-cyd_ili9341.json" selected>ELEGOO / ILI9341 panel (recommended board)</option>
+        <option value="./manifest-cyd_st7789.json">Other CYD &mdash; ST7789 panel</option>
+        <option value="./manifest.json">ST7789, but colours look inverted with the option above</option>
       </select>
       <p class="hint">
         Not sure? Leave it on the first one. If the screen comes up white, garbled,
         or with wrong colours, reconnect and pick another &mdash; reflashing takes a minute.
       </p>
     </div>
-    <esp-web-install-button manifest="./manifest-cyd_st7789.json">
+    <esp-web-install-button manifest="./manifest-cyd_ili9341.json">
       <button class="btn" slot="activate">Plug in &amp; Install</button>
       <span slot="unsupported">This browser can't flash over USB. Use <b>Chrome, Edge, or Opera on a computer</b>.</span>
       <span slot="not-allowed">Web Serial needs a secure connection &mdash; open this page over <code>https</code>.</span>
@@ -129,12 +129,15 @@
 
   <h2>Before you start</h2>
   <ul class="steps">
-    <li>An <b>ESP32-2432S028R</b> board &mdash; the 2.8&Prime; resistive-touch "CYD" (Cheap Yellow Display).</li>
+    <li>A <b>2.8&Prime; resistive-touch "CYD"</b> (ESP32-2432S028R). Two verified boards:
+      the <a href="https://amzn.to/4dhlNyx">ELEGOO 2-pack (USB-C, ILI9341)</a> &mdash;
+      the recommended one &mdash; and <a href="https://amzn.to/4h9kKCf">this ST7789 board</a>.
+      (Amazon affiliate links.)</li>
     <li>A <b>USB data cable</b> that fits it. Many cheap cables are charge-only and won't work.</li>
-    <li>The <b>CH340 USB-serial driver</b> if your computer doesn't see the board:
-      <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html">Windows</a> &middot;
-      <a href="https://www.wch-ic.com/downloads/CH341SER_MAC_ZIP.html">macOS</a>
-      (recent macOS has it built in).</li>
+    <li>A <b>USB-serial driver</b> if your computer doesn't see the board (CH340 on most,
+      CP2102 on some): <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html">CH340 Windows</a> &middot;
+      <a href="https://www.wch-ic.com/downloads/CH341SER_MAC_ZIP.html">CH340 macOS</a>
+      (recent macOS has both built in).</li>
   </ul>
 
   <h2>What happens</h2>
@@ -151,8 +154,9 @@
   <div class="note">
     <b>Screen white, garbled, or wrong colours after flashing?</b> The "ESP32-2432S028R"
     label covers several different display panels. Reconnect, pick a different
-    <b>display panel</b> above, and install again. (2-USB-port boards are usually
-    ST7789; ELEGOO and single-micro-USB boards are often ILI9341.)
+    <b>display panel</b> above, and install again &mdash; your config is kept.
+    (ELEGOO and other USB-C boards are usually ILI9341; two-USB-port boards are
+    often ST7789.)
   </div>
 
   <h2>No computer? (phone / Safari / Firefox)</h2>

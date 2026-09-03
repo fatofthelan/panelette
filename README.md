@@ -58,14 +58,22 @@ lives on the device's flash and survives firmware updates.
 
 ## Hardware
 
-- **ESP32-2432S028R**, the 2.8" **resistive**-touch "CYD". This firmware is
-  tuned for that exact board (ST7789 panel, BGR order — many CYDs ship an
-  ILI9341; this variant does not). Built and tested on
-  [this one](https://amzn.to/4h9kKCf) (Amazon affiliate link).
-- A USB **data** cable (many cheap cables are charge-only).
+Any 2.8" **resistive**-touch "CYD" (`ESP32-2432S028R`). That label ships with
+several different display panels, so the installer / build has a matching
+option per panel. **Verified boards:**
 
-See [CLAUDE.md](CLAUDE.md) for the hard-won hardware and build details — it
-doubles as the contributor technical reference.
+| Board | Panel | Build / installer option |
+| --- | --- | --- |
+| [ELEGOO 2-pack, USB-C](https://amzn.to/4dhlNyx) — *recommended* | ILI9341 | `cyd_ili9341` (installer default) |
+| [This ST7789 board](https://amzn.to/4h9kKCf) | ST7789 (inverts colours) | `esp32dev` |
+
+*Amazon affiliate links.* Other ST7789 CYDs use the `cyd_st7789` option. Plus a
+USB **data** cable (many cheap cables are charge-only).
+
+If the screen is white or the colours are wrong after flashing, it's the wrong
+panel option — pick another and reflash (config is kept). See
+[CLAUDE.md](CLAUDE.md) for the hardware details — it doubles as the contributor
+technical reference.
 
 ## License
 
