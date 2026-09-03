@@ -31,7 +31,9 @@ build-config changes.
   Gitignored. `#if __has_include` in main.ino - the firmware builds and
   runs without it (on-device Wi-Fi setup takes over). Copy from
   `secrets.h.example`; the `"your-wifi-ssid"` placeholder counts as not-set.
-- `platformio.ini` - single env `[env:esp32dev]`. Read its comments before
+- `platformio.ini` - one env per CYD panel variant (`esp32dev` = original
+  ST7789+invert, `cyd_ili9341`, `cyd_st7789`); shared config in `[env]` +
+  `[panel]`. Read its header comment before
   changing `build_flags` or `lib_deps`.
 - `docs/` - the GitHub Pages site: `index.html` (ESP Web Tools install
   page), `manifest.json`, and `firmware/*.bin` (the four flash parts).
@@ -75,32 +77,40 @@ in the web Device card. If a flip shows a small pixel offset/black band,
 that's a CGRAM-offset quirk on some CYD ST7789 units - add `TFT_ROW_OFFSET`
 / `TFT_COL_OFFSET` build flags.
 
-## Display hardware config - this is an ST7789 panel, not ILI9341
+## Display hardware config - the CYD is not one board
 
-Many CYDs ship with an ILI9341; **this one is ST7789** and needs BGR color
-order. Wrong driver = garbled or blank screen with **no compile error**.
+"ESP32-2432S028R" ships with an **ST7789 or an ILI9341** panel, **RGB or BGR**
+subpixel order, with or without a hardware colour inversion, and occasionally a
+CGRAM pixel offset. Wrong driver = garbled or blank (usually white) screen with
+**no compile error**. `platformio.ini` has one env per known variant - the pin
+map is shared (`[panel] common_flags`); only the driver / colour flags differ:
 
-TFT_eSPI is configured entirely from `platformio.ini` `build_flags`
-(`-D USER_SETUP_LOADED=1` plus all the pins/flags), NOT from a `User_Setup.h`
-file and NOT from a vendored copy of the library in `lib/`. The build_flags
-are a 1:1 port of the `User_Setup.h` that worked under the Arduino IDE. Key
-values:
+- **`[env:esp32dev]`** - the original board this project was built on: ST7789 +
+  `TFT_BGR` + `PANEL_INVERT_COLORS` (the bitwise-complement quirk, below). This
+  is the env CI ships in the browser installer.
+- **`[env:cyd_ili9341]`** - ELEGOO and other ILI9341 CYDs: `ILI9341_2_DRIVER`
+  (the alt init table CYD folks use for white-screen ILI9341s) + `TFT_BGR`, no
+  inversion.
+- **`[env:cyd_st7789]`** - "normal" ST7789 CYDs: ST7789 + `TFT_BGR`, no inversion.
 
-- `ST7789_DRIVER`, `TFT_RGB_ORDER=TFT_BGR`, 240x320
-- SPI: `SPI_FREQUENCY=40000000`, `SPI_TOUCH_FREQUENCY=2500000`
-- Pins: MISO 12, MOSI 13, SCLK 14, CS 15, DC 2, RST -1, BL 21, backlight
-  active HIGH
-- Fonts: `LOAD_GLCD`, `LOAD_FONT2/4/6/7/8`, `LOAD_GFXFF` (sketch itself only
-  uses 1/2/4 + GFXFF; the rest match the original setup)
+Flash a matching env: `pio run -e cyd_ili9341 -t upload`. Symptom guide is in
+`platformio.ini`'s header comment. **Touch calibration (`TOUCH_*_MIN/MAX` in
+main.ino) is also per-panel** and will likely need redoing on a new board.
 
-`TFT_eSPI` IS listed in `lib_deps` (`bodmer/TFT_eSPI @ ^2.5.43`) - the
-`USER_SETUP_LOADED` flag makes the registry copy ignore its own
-`User_Setup.h`, so there is no pin-mismatch risk and nothing to vendor.
+TFT_eSPI is configured entirely from `build_flags` (`-D USER_SETUP_LOADED=1`
+plus pins/flags), NOT from a `User_Setup.h` and NOT from a vendored copy in
+`lib/`. Shared values: 240x320, `SPI_FREQUENCY=40000000`,
+`SPI_TOUCH_FREQUENCY=2500000`, pins MISO 12 / MOSI 13 / SCLK 14 / CS 15 / DC 2 /
+RST -1 / BL 21 (active HIGH), fonts `LOAD_GLCD` + `LOAD_FONT2/4/6/7/8` +
+`LOAD_GFXFF`. `TFT_eSPI` is in `lib_deps` (`^2.5.43`); `USER_SETUP_LOADED` makes
+it ignore its own `User_Setup.h`, so nothing to vendor.
 
-## Critical: the display renders every color as its bitwise complement
+## Critical: the ORIGINAL board renders every color as its bitwise complement
 
-This took several rounds to diagnose, including wrong turns. **Do not
-re-litigate without new evidence.**
+Applies to `[env:esp32dev]` only (it defines `PANEL_INVERT_COLORS`). On the
+other envs `fixColor565()` is a pass-through. This took several rounds to
+diagnose on the original board, including wrong turns. **Do not re-litigate
+without new evidence.**
 
 - Wrong theory (tried first): red/blue channels swapped. A `swapRB565()`
   software helper gave inconsistent results. (Note: the *hardware* BGR order
@@ -115,17 +125,19 @@ re-litigate without new evidence.**
   values - all matched exactly (intended blue photographed as orange,
   intended amber as blue, the timer marquee's intended red as yellow).
 
-**Current fix**: `fixColor565(uint16_t c) { return (uint16_t)(~c); }`, applied
-to every color literal at the point it is defined (theme colors in
-`applyTheme()`, the `BULB_COLORS` table, `TFT_RED`/`TFT_WHITE` built-ins used
-for the marquee / reboot button / switch knob). Any new hardcoded color
-needs `fixColor565()` wrapped around it or it renders wrong. Colors built
-from already-wrapped colors (e.g. `blendColor565(COL_PANEL, COL_ACCENT, 40)`)
-do NOT need re-wrapping.
+**Current fix**: `fixColor565()` returns `~c` when `PANEL_INVERT_COLORS` is
+defined (else `c` unchanged), applied to every color literal at the point it is
+defined (theme colors in `applyTheme()`, the `BULB_COLORS` table,
+`TFT_RED`/`TFT_WHITE` built-ins used for the marquee / reboot button / switch
+knob). Any new hardcoded color needs `fixColor565()` wrapped around it. Colors
+built from already-wrapped colors (e.g. `blendColor565(COL_PANEL, COL_ACCENT,
+40)`) do NOT need re-wrapping.
 
-**Do not add `-D TFT_INVERSION_OFF` (or `_ON`) to fight this** without also
-removing `fixColor565()` - the software hack is tuned against the current
-build_flags exactly, and changing the hardware inversion would double-invert.
+**Do not add `-D TFT_INVERSION_OFF` (or `_ON`) to `[env:esp32dev]` to fight
+this** without also removing `PANEL_INVERT_COLORS` - the software hack is tuned
+against that env's flags exactly, and changing the hardware inversion would
+double-invert. A white screen with **negative-image text** on some other board
+means `PANEL_INVERT_COLORS` is set when it shouldn't be (or vice versa).
 
 ## Arduino / PlatformIO .ino auto-prototype gotcha
 

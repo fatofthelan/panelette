@@ -211,14 +211,23 @@ static uint16_t blendColor565(uint16_t base, uint16_t target, int pct) {
   return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
-// This panel displays every color as its bitwise complement relative to
-// what's sent (confirmed against two independent, unrelated colors -
-// intended blue rendering as orange, intended amber rendering as blue -
-// both exactly matching NOT(intended)). tft.invertDisplay() didn't
-// correct it, so this compensates in software: wrap every intended color
-// with this before it's used, and it'll display as intended.
-static uint16_t fixColor565(uint16_t c) {
+// The original ST7789 CYD this project was built on displays every colour as
+// its bitwise complement relative to what's sent (confirmed against two
+// independent, unrelated colours - intended blue rendering as orange, intended
+// amber rendering as blue - both exactly matching NOT(intended)).
+// tft.invertDisplay() didn't correct it, so it's compensated in software:
+// every intended colour is wrapped in this before use.
+//
+// Other CYD panels (ILI9341 boards, "normal" ST7789 units) don't have that
+// quirk - for those, build with the panel's env, which does NOT define
+// PANEL_INVERT_COLORS, and this becomes a pass-through. Getting it wrong shows
+// as a white screen with negative-image text (the black background fills white).
+static inline uint16_t fixColor565(uint16_t c) {
+#ifdef PANEL_INVERT_COLORS
   return (uint16_t)(~c);
+#else
+  return c;
+#endif
 }
 
 // Colour scheme axis. Each has a dark + light variant; the 7 values are
@@ -5255,7 +5264,7 @@ void setup() {
 
   tft.init();
   tft.setRotation(2);
-  tft.fillScreen(fixColor565(TFT_BLACK)); // display renders every colour inverted - see fixColor565
+  tft.fillScreen(fixColor565(TFT_BLACK)); // fixColor565 is ~c on PANEL_INVERT_COLORS builds, pass-through otherwise
 
   // Keep announcing through early init (covers a probe that opened the port
   // late); improvLoop() keeps a slower announce going for ~20 s after boot.

@@ -328,18 +328,26 @@ the panel reboots afterward.
 - Try a slower speed: open `platformio.ini` and change `upload_speed` to
   `230400`.
 
-**Upload succeeds but the screen is black**
-- The backlight is on pin 21; a fully black screen with the board otherwise
-  working usually means a wrong display setting for your board revision. This
-  firmware is built for the **ST7789** version of the CYD. If yours is older
-  (ILI9341), open `platformio.ini` and change `-D ST7789_DRIVER=1` to
-  `-D ILI9341_2_DRIVER=1`, remove the `-D TFT_RGB_ORDER=TFT_BGR` line, and
-  re-upload.
-
-**Screen works but colors look wrong (blues look orange, etc.)**
-- See `CLAUDE.md` -> "the display renders every color as its bitwise
-  complement". This board family has a known quirk the firmware already
-  compensates for; if yours differs, that section explains the knobs.
+**Upload succeeds but the screen is white, black, or garbled**
+- "ESP32-2432S028R" ships with several different display panels. The browser
+  installer and the default `pio run` target (`-e esp32dev`) are built for the
+  panel on the board this project was developed on. Build from source with a
+  matching env instead:
+  - `~/.platformio/penv/bin/pio run -e cyd_ili9341 -t upload` &mdash; ELEGOO
+    boards and other ILI9341 panels
+  - `~/.platformio/penv/bin/pio run -e cyd_st7789 -t upload` &mdash; "normal"
+    ST7789 panels (no colour-inversion quirk)
+  - `~/.platformio/penv/bin/pio run -e esp32dev -t upload` &mdash; the default
+- Symptom guide (also in `platformio.ini`'s header):
+  - **white, no image** &rarr; wrong driver, try another env
+  - **white with negative-image (dark-on-light) text** &rarr; right driver,
+    wrong inversion &mdash; switch between `esp32dev` and `cyd_st7789`
+  - **blues look orange / colours swapped** &rarr; edit that env's
+    `TFT_RGB_ORDER` between `TFT_BGR` and `TFT_RGB`
+  - **small offset or a thin black band at an edge** &rarr; add
+    `-D TFT_ROW_OFFSET=` / `-D TFT_COL_OFFSET=` to that env
+- Touch calibration (`TOUCH_*_MIN/MAX` in `src/main.ino`) is per-panel as well
+  &mdash; expect to redo it on a different board (see "Touch is offset" below).
 
 **Panel shows "No WiFi connection"**
 - Re-check `include/secrets.h` (exact SSID and password, keep the quotes),
