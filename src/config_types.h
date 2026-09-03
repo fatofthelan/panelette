@@ -65,6 +65,22 @@ struct DeviceConfig {
   char gateway[16];
   char dns1[16];           // optional
   char dns2[16];           // optional
+
+  // --- Backlight & power-save (see the backlight module in main.ino) ---
+  char     backlightMode[10];     // "manual" (default) | "schedule" | "sensor"
+  uint8_t  backlightManualPct;    // manual-mode level (the web UI slider)
+  uint8_t  backlightHighPct;      // schedule "day" / sensor "bright" target
+  uint8_t  backlightLowPct;       // schedule "night" / sensor "dark" target
+  uint16_t backlightNightFromMin; // schedule: night starts, minutes since local midnight
+  uint16_t backlightNightToMin;   // schedule: night ends
+  bool     backlightFollowSun;    // schedule: use sunset->sunrise when the forecast sun times are known
+  uint16_t ldrDarkRaw;            // sensor: analogRead(LDR) at the "dark" calibration point
+  uint16_t ldrBrightRaw;          // sensor: analogRead(LDR) at the "bright" calibration point
+                                  // (dark > bright on the CYD - direction is derived, not set)
+  bool     powerSave;             // dim the screen after inactivity; first tap wakes it (and is swallowed)
+  uint16_t powerSaveSec;          // inactivity timeout before dimming
+  uint8_t  powerSaveDimPct;       // backlight level while asleep (0 = fully off)
+
   uint8_t pageCount;
   PageConfig pages[MAX_PAGES];
 };

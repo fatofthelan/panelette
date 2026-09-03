@@ -270,6 +270,41 @@ they render jagged.
 - Tap vs. long-press vs. swipe are disambiguated by `MOVE_TOLERANCE`
   and `LONG_PRESS_MS`.
 
+## Backlight / power-save (`backlightLoop()`, runs every loop, all modes)
+
+Module sits just above `setup()`; its shared globals (`gLastInteractionMs`,
+`gBlAsleep`, `gBlSwallowUntilMs`, LDR/level state) are declared up by the
+weather sun globals because `readTouchXY()` / `handleContinuousTouch()` (both
+earlier in the file) touch them - the auto-prototype gotcha.
+
+- **PWM on GPIO21** (`BACKLIGHT_PIN`, `TFT_BL`, active HIGH). `backlightInit()`
+  sets a global 20 kHz `analogWriteFrequency` (above audible - no coil whine)
+  before the first `analogWrite`; nothing else in the sketch uses `analogWrite`.
+- **`backlightWriteDuty(pct)`** applies a gamma 2.2 curve so low % is genuinely
+  dim, with a floor of duty 2 for any pct > 0 (0 = fully off).
+- **`cfg.backlightMode`**: `manual` (default, `backlightManualPct`) /
+  `schedule` (`backlightHighPct` day / `backlightLowPct` night, window
+  `backlightNightFromMin`..`ToMin`, or sunset->sunrise when
+  `backlightFollowSun` && `weatherKnown`) / `sensor` (LDR).
+- **LDR on GPIO34** (ADC1 - Wi-Fi-safe). Sampled at 5 Hz into `gLdrEma`.
+  Sensor mode linearly maps the EMA between `cfg.ldrDarkRaw` and
+  `cfg.ldrBrightRaw` -> `backlightLowPct`..`backlightHighPct`. **On the CYD
+  the LDR reads HIGH in the dark, LOW in bright** - so `ldrDarkRaw` (~3000) >
+  `ldrBrightRaw` (~300); the map derives direction from the two values, so
+  there is no "inverted" flag. `GET /ldr` returns `"<raw> <targetPct>
+  <currentPct>"` - the web card's calibration ("Set dark / bright point")
+  parses the raw; the rest is a diagnostic.
+- **Power save** (`cfg.powerSave`, separate toggle): after `powerSaveSec` with
+  no touch (`gLastInteractionMs`, bumped in `readTouchXY()`), ramp to
+  `powerSaveDimPct` (0 = off). Never sleeps while `timerExpired`. The touch
+  that wakes it is **swallowed** - `handleContinuousTouch()` sets
+  `gBlSwallowUntilMs = now + 400` and returns early, so the wake tap doesn't
+  also toggle a tile or start a swipe.
+- `backlightLoop()` re-evaluates the target every 250 ms and ramps `gBlCurrentPct`
+  toward it every ~16 ms - fast on wake (0.5 %/ms), gentle otherwise (0.05).
+- Web UI: **"Display & Power" card** (own `<form>`, gated on `backlightMode`
+  in `handleSaveDevice()`).
+
 ## Wi-Fi credentials & on-device setup
 
 - **Credentials live in NVS** (`Preferences`, namespace `"wifi"`), NOT in
@@ -367,12 +402,13 @@ they render jagged.
   screen-border alert, defaults on), `haLiveUpdates` (WebSocket, defaults
   off). `TileConfig.dateEuro` (per-tile D/M/Y vs M/D/Y for date tiles).
   `TileRuntime.unavailable` (not persisted) - set from the HA `state`
-  string; the tile shows "N/A" + a struck-through icon.
-- **The Device / Home Assistant / Weather cards are three separate `<form>`s**
-  that all POST `/save-device`. `handleSaveDevice()` gates each card's
-  writes behind a field unique to that form (`deviceName` / `haUrl` /
-  `weatherName`) so a partial submit can't clear the others. Same trick in
-  `handleSaveFlash()` (gated on `flashRate`).
+  string; the tile shows "N/A" + a struck-through icon. `backlight*` /
+  `ldr*` / `powerSave*` - the auto-dim feature (see the Backlight section).
+- **The Device / Home Assistant / Weather / Display&Power cards are separate
+  `<form>`s** that all POST `/save-device`. `handleSaveDevice()` gates each
+  card's writes behind a field unique to that form (`deviceName` / `haUrl` /
+  `weatherName` / `backlightMode`) so a partial submit can't clear the
+  others. Same trick in `handleSaveFlash()` (gated on `flashRate`).
 - Web UI checkboxes render as coloured on/off **toggle switches** (CSS
   `appearance:none` on `.check input[type=checkbox]`); radios are unchanged.
   Backup & Restore is a **segmented Back up / Restore control** (`.seg`,

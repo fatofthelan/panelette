@@ -321,6 +321,12 @@ Changes take effect on the panel immediately.
 - **Theme** - in the web UI's Device section, pick a colour scheme, a
   typeface (Sans or Mono), and rounded or square corners. Dark/Light stays
   on the Status page.
+- **Screen brightness** - the web UI's **Display & Power** card: a fixed
+  level (*Manual*, the default), day/night levels by time or sunset/sunrise
+  (*Schedule*), or follow the room's light via the onboard sensor
+  (*Sensor* - use "Set dark / bright point" to calibrate it). Separately,
+  **Power save** dims or blanks the screen after an idle timeout; the first
+  tap just wakes it.
 
 ---
 

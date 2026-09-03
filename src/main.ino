@@ -952,6 +952,19 @@ void setDefaultConfig() {
   cfg.useStaticIp = false;
   cfg.ipAddr[0] = cfg.subnet[0] = cfg.gateway[0] = cfg.dns1[0] = cfg.dns2[0] = '\0';
 
+  strlcpy(cfg.backlightMode, "manual", sizeof(cfg.backlightMode));
+  cfg.backlightManualPct = 90;
+  cfg.backlightHighPct = 100;
+  cfg.backlightLowPct = 20;
+  cfg.backlightNightFromMin = 21 * 60 + 30; // 21:30
+  cfg.backlightNightToMin   = 6 * 60 + 30;  // 06:30
+  cfg.backlightFollowSun = false;
+  cfg.ldrDarkRaw = 3000;   // CYD LDR reads HIGH in the dark, LOW in bright light
+  cfg.ldrBrightRaw = 300;
+  cfg.powerSave = false;
+  cfg.powerSaveSec = 60;
+  cfg.powerSaveDimPct = 0;
+
   cfg.pageCount = 4;
 
   const char* defIds[4]   = {"home", "forecast", "timers", "status"};
@@ -1096,6 +1109,21 @@ bool loadConfig() {
   strlcpy(cfg.dns1,    doc["dns1"]    | "", sizeof(cfg.dns1));
   strlcpy(cfg.dns2,    doc["dns2"]    | "", sizeof(cfg.dns2));
 
+  strlcpy(cfg.backlightMode, doc["backlightMode"] | "manual", sizeof(cfg.backlightMode));
+  if (strcmp(cfg.backlightMode, "manual") && strcmp(cfg.backlightMode, "schedule") && strcmp(cfg.backlightMode, "sensor"))
+    strlcpy(cfg.backlightMode, "manual", sizeof(cfg.backlightMode));
+  cfg.backlightManualPct   = (uint8_t)constrain((int)(doc["backlightManualPct"] | 90), 0, 100);
+  cfg.backlightHighPct     = (uint8_t)constrain((int)(doc["backlightHighPct"] | 100), 0, 100);
+  cfg.backlightLowPct      = (uint8_t)constrain((int)(doc["backlightLowPct"] | 20), 0, 100);
+  cfg.backlightNightFromMin= (uint16_t)constrain((int)(doc["backlightNightFromMin"] | 1290), 0, 1439);
+  cfg.backlightNightToMin  = (uint16_t)constrain((int)(doc["backlightNightToMin"] | 390), 0, 1439);
+  cfg.backlightFollowSun   = doc["backlightFollowSun"] | false;
+  cfg.ldrDarkRaw           = (uint16_t)constrain((int)(doc["ldrDarkRaw"] | 3000), 0, 4095);
+  cfg.ldrBrightRaw         = (uint16_t)constrain((int)(doc["ldrBrightRaw"] | 300), 0, 4095);
+  cfg.powerSave            = doc["powerSave"] | false;
+  cfg.powerSaveSec         = (uint16_t)constrain((int)(doc["powerSaveSec"] | 60), 5, 3600);
+  cfg.powerSaveDimPct      = (uint8_t)constrain((int)(doc["powerSaveDimPct"] | 0), 0, 100);
+
   JsonArray pagesArr = doc["pages"].as<JsonArray>();
   cfg.pageCount = 0;
   for (JsonObject p : pagesArr) {
@@ -1163,6 +1191,19 @@ void buildConfigJson(JsonDocument& doc) {
   doc["gateway"] = cfg.gateway;
   doc["dns1"] = cfg.dns1;
   doc["dns2"] = cfg.dns2;
+
+  doc["backlightMode"] = cfg.backlightMode;
+  doc["backlightManualPct"] = cfg.backlightManualPct;
+  doc["backlightHighPct"] = cfg.backlightHighPct;
+  doc["backlightLowPct"] = cfg.backlightLowPct;
+  doc["backlightNightFromMin"] = cfg.backlightNightFromMin;
+  doc["backlightNightToMin"] = cfg.backlightNightToMin;
+  doc["backlightFollowSun"] = cfg.backlightFollowSun;
+  doc["ldrDarkRaw"] = cfg.ldrDarkRaw;
+  doc["ldrBrightRaw"] = cfg.ldrBrightRaw;
+  doc["powerSave"] = cfg.powerSave;
+  doc["powerSaveSec"] = cfg.powerSaveSec;
+  doc["powerSaveDimPct"] = cfg.powerSaveDimPct;
 
   JsonArray pagesArr = doc.createNestedArray("pages");
   for (int i = 0; i < cfg.pageCount; i++) {
@@ -1509,6 +1550,17 @@ int weatherCurrentCode = -1;    // WMO weather code
 bool weatherIsDay = true;       // drives sun vs moon icon variants
 int weatherSunriseMin = -1;     // today's sunrise, minutes since local midnight (-1 = unknown)
 int weatherSunsetMin = -1;
+
+// --- Backlight / power-save state (module + functions live just above setup()).
+// Declared here because readTouchXY() and handleContinuousTouch(), defined
+// before that module, poke gLastInteractionMs / gBlAsleep / gBlSwallowUntilMs. ---
+const int LDR_PIN = 34;                 // CYD photoresistor, ADC1_CH6 (safe with Wi-Fi)
+float         gLdrEma = -1.0f;          // smoothed analogRead(LDR_PIN); -1 = not sampled yet
+float         gBlCurrentPct = 100.0f;   // backlight level actually on the pin now (ramped)
+uint8_t       gBlTargetPct = 100;       // level we're ramping toward
+bool          gBlAsleep = false;        // true while power-save has the screen dimmed
+unsigned long gLastInteractionMs = 0;   // last touch (any) - drives the power-save timeout
+unsigned long gBlSwallowUntilMs = 0;    // ignore touches until here (eats the power-save wake tap)
 bool weatherKnown = false;
 time_t lastWeatherFetch = 0;
 const uint32_t WEATHER_INTERVAL_SEC = 15UL * 60UL;
@@ -1527,6 +1579,19 @@ DailyForecast forecast[5];
 bool useFahrenheit() {
   String tz(cfg.timezone);
   return tz.startsWith("us_") || tz == "alaska" || tz == "hawaii";
+}
+
+// "HH:MM" (24h, from an <input type=time>) -> minutes since midnight.
+int hhmmToMin(const String& s) {
+  int c = s.indexOf(':');
+  if (c < 1) return 0;
+  return constrain(s.substring(0, c).toInt(), 0, 23) * 60 + constrain(s.substring(c + 1).toInt(), 0, 59);
+}
+// minutes since midnight -> "HH:MM" (24h, for an <input type=time> value).
+String minToHHMM(int m) {
+  char b[6];
+  snprintf(b, sizeof(b), "%02d:%02d", (m / 60) % 24, m % 60);
+  return String(b);
 }
 
 // minutes-since-midnight -> "6:12 AM" / "06:12" per cfg.use12Hour.
@@ -1836,6 +1901,7 @@ void drawPageTypeIcon(T& d, const char* type, int cx, int cy, uint16_t c, float 
 // =========================================================
 bool readTouchXY(int& x, int& y) {
   if (!ts.touched()) return false;
+  gLastInteractionMs = millis(); // any contact keeps the screen awake (power-save)
   TS_Point p = ts.getPoint();
 
   long rawX = constrain((long)p.x, (long)TOUCH_X_MIN, (long)TOUCH_X_MAX);
@@ -3616,6 +3682,11 @@ void handleContinuousTouch() {
   bool down = readTouchXY(x, y);
   static bool wasDown = false;
 
+  // Power-save: the touch that wakes a dimmed screen is consumed (like a
+  // phone) - it wakes the backlight but doesn't toggle a tile or swipe.
+  if (down && gBlAsleep) gBlSwallowUntilMs = millis() + 400;
+  if (millis() < gBlSwallowUntilMs) { wasDown = down; return; }
+
   PageConfig& pg = cfg.pages[currentPageIndex];
   bool isGridPage = (strcmp(pg.type, "home") == 0 || strcmp(pg.type, "area") == 0);
 
@@ -4030,6 +4101,88 @@ void handleRoot() {
   h += "<div class='muted' style='margin-top:6px;'>Dark/light is separate &mdash; toggle it on the panel's Status screen. All fonts are anti-aliased.</div>";
   h += "<button class='primary' type='submit'>Save device</button>";
   h += "</section></form>";
+
+  // ---- Display & Power (own form, gated on backlightMode) ----
+  h += "<form method='POST' action='/save-device' class='dirty-guard'>";
+  h += "<section class='card'><h2>Display &amp; Power</h2>";
+  h += "<style>"
+       ".rng{display:flex;align-items:center;gap:10px;margin:8px 0}"
+       ".rng input[type=range]{flex:1;accent-color:var(--accent)}"
+       ".rng b{min-width:3.5ch;text-align:right;font-variant-numeric:tabular-nums;color:var(--accent)}"
+       ".bl-sub{margin:10px 0 0;padding:12px 0 2px;border-top:1px solid var(--border)}"
+       "</style>";
+
+  {
+    auto blRadio = [&](const char* val, const char* lbl) {
+      bool on = !strcmp(cfg.backlightMode, val);
+      h += "<div class='check'><input type='radio' id='blm_" + String(val) + "' name='backlightMode' value='" + val + "'"
+           + (on ? " checked" : "") + " onchange='blMode()'><label for='blm_" + String(val) + "' style='margin:0'>" + lbl + "</label></div>";
+    };
+    auto slider = [&](const char* name, const char* lbl, int val) {
+      h += "<label>" + String(lbl) + "</label><div class='rng'><input type='range' min='0' max='100' name='" + String(name)
+           + "' value='" + String(val) + "' oninput='this.nextElementSibling.textContent=this.value'><b>" + String(val) + "</b></div>";
+    };
+
+    h += "<label>Brightness mode</label>";
+    blRadio("manual",   "Manual &mdash; one fixed level");
+    blRadio("schedule", "Schedule &mdash; day / night levels by time");
+    blRadio("sensor",   "Sensor &mdash; follow the room's light (LDR)");
+
+    h += "<div id='bl-manual' class='bl-sub'>";
+    slider("backlightManualPct", "Level", cfg.backlightManualPct);
+    h += "</div>";
+
+    h += "<div id='bl-levels' class='bl-sub'>";
+    slider("backlightHighPct", "Bright level (day / lit room)", cfg.backlightHighPct);
+    slider("backlightLowPct",  "Dim level (night / dark room)", cfg.backlightLowPct);
+    h += "</div>";
+
+    h += "<div id='bl-schedule' class='bl-sub'><div class='grid2'>";
+    h += "<div><label>Night from</label><input type='time' name='backlightNightFrom' value='" + minToHHMM(cfg.backlightNightFromMin) + "'></div>";
+    h += "<div><label>Night to</label><input type='time' name='backlightNightTo' value='" + minToHHMM(cfg.backlightNightToMin) + "'></div>";
+    h += "</div><div class='check'><input type='checkbox' id='blsun' name='backlightFollowSun'" + String(cfg.backlightFollowSun ? " checked" : "")
+         + "><label for='blsun' style='margin:0'>Follow sunset &rarr; sunrise instead (needs location set)</label></div></div>";
+
+    h += "<div id='bl-sensor' class='bl-sub'>";
+    h += "<div class='muted'>Live light reading: <b id='ldrNow'>&hellip;</b> &nbsp;<span>saved: dark "
+         + String(cfg.ldrDarkRaw) + " &middot; bright " + String(cfg.ldrBrightRaw) + "</span></div>";
+    h += "<input type='hidden' name='ldrDarkRaw' id='ldrDark' value='" + String(cfg.ldrDarkRaw) + "'>";
+    h += "<input type='hidden' name='ldrBrightRaw' id='ldrBright' value='" + String(cfg.ldrBrightRaw) + "'>";
+    h += "<div class='muted' style='margin:6px 0'>Cover the board and <button type='button' onclick='ldrSet(\"dark\",this)'>Set dark point</button>, "
+         "then light it and <button type='button' onclick='ldrSet(\"bright\",this)'>Set bright point</button>. Direction sorts itself out.</div>";
+    h += "<div class='muted'>If the reading doesn't move when you shade the board, it has no usable sensor &mdash; use Schedule instead.</div></div>";
+
+    h += "<div class='bl-sub'><h3>Power save</h3>";
+    h += "<div class='check'><input type='checkbox' id='psave' name='powerSave'" + String(cfg.powerSave ? " checked" : "")
+         + "><label for='psave' style='margin:0'>Dim the screen when idle; a tap wakes it</label></div>";
+    h += "<label>Idle timeout</label><select name='powerSaveSec'>";
+    {
+      int opts[] = {15, 30, 60, 120, 300, 600};
+      const char* lbls[] = {"15 seconds", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes"};
+      for (int i = 0; i < 6; i++)
+        h += "<option value='" + String(opts[i]) + "'" + (cfg.powerSaveSec == opts[i] ? " selected" : "") + ">" + lbls[i] + "</option>";
+    }
+    h += "</select>";
+    slider("powerSaveDimPct", "Dim to (0 = screen off)", cfg.powerSaveDimPct);
+    h += "</div>";
+  }
+
+  h += "<button class='primary' type='submit'>Save display</button>";
+  h += "</section></form>";
+  h += "<script>"
+       "function blMode(){var m=document.querySelector('input[name=backlightMode]:checked').value;"
+       "document.getElementById('bl-manual').hidden=(m!=='manual');"
+       "document.getElementById('bl-levels').hidden=(m==='manual');"
+       "document.getElementById('bl-schedule').hidden=(m!=='schedule');"
+       "document.getElementById('bl-sensor').hidden=(m!=='sensor');}"
+       "blMode();"
+       "setInterval(function(){if(document.getElementById('bl-sensor').hidden)return;"
+       "fetch('/ldr').then(function(r){return r.text();}).then(function(t){var p=t.split(' ');var e=document.getElementById('ldrNow');"
+       "if(e)e.textContent=p[0]+(p[1]!==undefined?'  \\u2192  '+p[1]+'%':'');});},1200);"
+       "function ldrSet(which,b){fetch('/ldr').then(function(r){return r.text();}).then(function(t){var raw=t.split(' ')[0];"
+       "document.getElementById(which==='dark'?'ldrDark':'ldrBright').value=raw;"
+       "var o=b.textContent;b.textContent='set: '+raw;setTimeout(function(){b.textContent=o;},1500);});}"
+       "</script>";
 
   h += "<form method='POST' action='/save-device' class='dirty-guard'>";
   h += "<section class='card'><h2>Home Assistant</h2>";
@@ -4533,6 +4686,31 @@ void handleSaveDevice() {
   if (weatherForm) {
     weatherKnown = false;
     lastWeatherFetch = 0;
+  }
+
+  // --- Display & Power card (its own <form>, gated on backlightMode) ---
+  if (server.hasArg("backlightMode")) {
+    String m = server.arg("backlightMode");
+    if (m == "manual" || m == "schedule" || m == "sensor")
+      strlcpy(cfg.backlightMode, m.c_str(), sizeof(cfg.backlightMode));
+    auto pctArg = [](const char* k, uint8_t cur) {
+      return server.hasArg(k) ? (uint8_t)constrain(server.arg(k).toInt(), 0, 100) : cur;
+    };
+    cfg.backlightManualPct = pctArg("backlightManualPct", cfg.backlightManualPct);
+    cfg.backlightHighPct   = pctArg("backlightHighPct",   cfg.backlightHighPct);
+    cfg.backlightLowPct    = pctArg("backlightLowPct",    cfg.backlightLowPct);
+    if (server.hasArg("backlightNightFrom"))
+      cfg.backlightNightFromMin = (uint16_t)constrain(hhmmToMin(server.arg("backlightNightFrom")), 0, 1439);
+    if (server.hasArg("backlightNightTo"))
+      cfg.backlightNightToMin = (uint16_t)constrain(hhmmToMin(server.arg("backlightNightTo")), 0, 1439);
+    cfg.backlightFollowSun = server.hasArg("backlightFollowSun");
+    if (server.hasArg("ldrDarkRaw"))   cfg.ldrDarkRaw   = (uint16_t)constrain(server.arg("ldrDarkRaw").toInt(),   0, 4095);
+    if (server.hasArg("ldrBrightRaw")) cfg.ldrBrightRaw = (uint16_t)constrain(server.arg("ldrBrightRaw").toInt(), 0, 4095);
+    cfg.powerSave   = server.hasArg("powerSave");
+    if (server.hasArg("powerSaveSec"))
+      cfg.powerSaveSec = (uint16_t)constrain(server.arg("powerSaveSec").toInt(), 5, 3600);
+    cfg.powerSaveDimPct = pctArg("powerSaveDimPct", cfg.powerSaveDimPct);
+    gLastInteractionMs = millis(); // saving from the web UI counts as activity
   }
 
   saveConfig();
@@ -5241,7 +5419,125 @@ void setupWebServer() {
   server.on("/ha/area-entities", handleHaAreaEntities);
   server.on("/export", handleExport);
   server.on("/import", HTTP_POST, handleImportComplete, handleImportUpload);
+  server.on("/ldr", handleLdr);
   server.begin();
+}
+
+// =========================================================
+// BACKLIGHT / POWER-SAVE
+// =========================================================
+// Backlight PWM is on GPIO21 (TFT_BL, active HIGH). backlightLoop() runs every
+// loop() tick in every mode: it picks a target % from the mode + power-save
+// state and ramps the pin toward it. LDR is on GPIO34 (ADC1, Wi-Fi-safe).
+
+// Minutes since local midnight, or -1 before NTP has synced.
+int localNowMinutes() {
+  time_t t = time(nullptr);
+  if (t < 1700000000) return -1;
+  struct tm lt;
+  localtime_r(&t, &lt);
+  return lt.tm_hour * 60 + lt.tm_min;
+}
+
+// Is `now` inside [from, to)? Handles a window that wraps past midnight
+// (from > to), which is the normal case for a night window.
+static bool inMinuteWindow(int now, int from, int to) {
+  if (from == to) return false;
+  return (from < to) ? (now >= from && now < to)
+                     : (now >= from || now < to);
+}
+
+// Push `pct` to the backlight pin with a gamma curve, so low percentages are
+// genuinely dim rather than "almost off". 0 = off; >0 keeps a visible floor.
+void backlightWriteDuty(float pct) {
+  pct = constrain(pct, 0.0f, 100.0f);
+  int duty = (int)lroundf(powf(pct / 100.0f, 2.2f) * 255.0f);
+  if (pct >= 0.5f && duty < 2) duty = 2;
+  analogWrite(BACKLIGHT_PIN, duty);
+}
+
+// The level the active mode wants, before power-save is applied.
+uint8_t backlightModeTargetPct() {
+  if (strcmp(cfg.backlightMode, "sensor") == 0) {
+    if (gLdrEma < 0) return cfg.backlightHighPct;      // no sample yet
+    float span = (float)cfg.ldrBrightRaw - (float)cfg.ldrDarkRaw; // sign derived, not configured
+    if (fabsf(span) < 1.0f) return cfg.backlightHighPct;          // uncalibrated / equal points
+    float t = ((float)gLdrEma - (float)cfg.ldrDarkRaw) / span;    // 0 at the dark point, 1 at the bright point
+    t = constrain(t, 0.0f, 1.0f);
+    return (uint8_t)lroundf(cfg.backlightLowPct + t * ((int)cfg.backlightHighPct - (int)cfg.backlightLowPct));
+  }
+
+  if (strcmp(cfg.backlightMode, "schedule") == 0) {
+    int nowMin = localNowMinutes();
+    if (nowMin < 0) return cfg.backlightHighPct;       // no clock yet
+    int from = cfg.backlightNightFromMin, to = cfg.backlightNightToMin;
+    if (cfg.backlightFollowSun && weatherKnown && weatherSunsetMin >= 0 && weatherSunriseMin >= 0) {
+      from = weatherSunsetMin;
+      to   = weatherSunriseMin;
+    }
+    return inMinuteWindow(nowMin, from, to) ? cfg.backlightLowPct : cfg.backlightHighPct;
+  }
+
+  return cfg.backlightManualPct; // "manual"
+}
+
+void backlightInit() {
+  analogWriteFrequency(20000);          // 20 kHz - above the audible range (no coil whine)
+  analogWriteResolution(8);
+  gBlCurrentPct = gBlTargetPct = 100;
+  gLastInteractionMs = millis();
+  backlightWriteDuty(100);
+}
+
+void backlightLoop() {
+  unsigned long now = millis();
+
+  // Sample the LDR at ~5 Hz into an EMA (also feeds the /ldr calibration readout).
+  static unsigned long lastSample = 0;
+  if (now - lastSample >= 200) {
+    lastSample = now;
+    int raw = analogRead(LDR_PIN);
+    gLdrEma = (gLdrEma < 0) ? (float)raw : (gLdrEma * 0.85f + raw * 0.15f);
+  }
+
+  // Re-decide the target a few times a second.
+  static unsigned long lastEval = 0;
+  if (now - lastEval >= 250) {
+    lastEval = now;
+    int target = backlightModeTargetPct();
+
+    bool idle = cfg.powerSave && !timerExpired &&
+                (now - gLastInteractionMs) > (unsigned long)cfg.powerSaveSec * 1000UL;
+    gBlAsleep = idle;
+    if (idle && cfg.powerSaveDimPct < target) target = cfg.powerSaveDimPct;
+
+    gBlTargetPct = (uint8_t)constrain(target, 0, 100);
+  }
+
+  // Ramp the actual level toward the target - smooth, no flicker.
+  static unsigned long lastRamp = 0;
+  unsigned long dt = now - lastRamp;
+  if (dt >= 16) {
+    lastRamp = now;
+    if (dt > 250) dt = 250; // after a long-blocked loop, don't lurch
+    // Waking (target above current, not asleep) snaps quicker than fading out.
+    float rate = (!gBlAsleep && gBlTargetPct > gBlCurrentPct) ? 0.5f : 0.05f; // %/ms
+    float step = rate * dt;
+    float d = (float)gBlTargetPct - gBlCurrentPct;
+    if (d >  step) d =  step;
+    if (d < -step) d = -step;
+    gBlCurrentPct += d;
+    if (fabsf((float)gBlTargetPct - gBlCurrentPct) < 0.4f) gBlCurrentPct = gBlTargetPct;
+    backlightWriteDuty(gBlCurrentPct);
+  }
+}
+
+// GET /ldr - "<raw> <targetPct> <currentPct>". The calibration UI parseInt()s
+// the leading raw value; the rest is a handy diagnostic.
+void handleLdr() {
+  int raw = (int)lroundf(gLdrEma < 0 ? analogRead(LDR_PIN) : gLdrEma);
+  server.send(200, "text/plain",
+              String(raw) + " " + String(gBlTargetPct) + " " + String((int)lroundf(gBlCurrentPct)));
 }
 
 // =========================================================
@@ -5267,7 +5563,7 @@ void setup() {
                 FW_NAME, FW_VERSION, PANEL_VARIANT, __DATE__, __TIME__);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
-  analogWrite(BACKLIGHT_PIN, 255);
+  backlightInit(); // 20 kHz PWM, screen full-on; backlightLoop() takes over post-loadConfig
 
   for (int i = 0; i < 6; i++) { IMPROV_BOOT_ANNOUNCE(); delay(20); }
 
@@ -5418,6 +5714,7 @@ void handleProvisioning() {
 
 void loop() {
   improvLoop(); // browser-installer serial handshake - runs in every mode
+  backlightLoop(); // auto-dim / power-save - runs in every mode
 
   if (gProvisioning) { handleProvisioning(); return; }
 

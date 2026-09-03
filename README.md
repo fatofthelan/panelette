@@ -26,6 +26,9 @@ configured from a built-in web UI — no YAML, no HA add-on.
 - **Themes**: colour scheme (cool / warm / phosphor / neutral) × typeface
   (anti-aliased Noto Sans / IBM Plex Mono) × corners (rounded / square),
   plus a dark/light toggle. All anti-aliased.
+- **Auto-dim**: fixed brightness, a day/night schedule (clock or
+  sunset/sunrise), or the onboard light sensor. Optional power-save that
+  blanks the screen when idle — first tap wakes it.
 - **Web UI**: device + theme settings, HA URL/token, add/remove/reorder
   pages and tiles, entity picker and "add from an HA area", static-IP or
   DHCP, backup / restore, reboot.
