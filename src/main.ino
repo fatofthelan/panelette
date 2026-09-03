@@ -98,7 +98,7 @@ const char* HA_URL_DEFAULT = "http://homeassistant.local:8123";
 // header, and reported over Improv-Serial so the browser installer can
 // tell "install" from "update".
 #define FW_NAME    "Panelette"
-#define FW_VERSION "1.1.0"
+#define FW_VERSION "1.2.0"
 
 // Which CYD panel this build targets - set per-env in platformio.ini. Printed
 // in the serial banner and shown on the Status page so a wrong-panel flash is
