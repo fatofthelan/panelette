@@ -32,6 +32,15 @@ struct PageConfig {
   TileConfig tiles[MAX_TILES];
 };
 
+// One touch-calibration slot - see DeviceConfig.touchCal below for why
+// there are 4 of these (one per TFT_eSPI rotation value) rather than one.
+struct TouchCal {
+  bool    calibrated;   // false = readTouchXY() uses the compiled TOUCH_* defaults for this rotation
+  bool    swapXY;       // true = raw p.y drives screen X (panel axes transposed)
+  int16_t xMin, xMax;   // raw range mapped to screen X 0..W-1 (min may exceed max = inverted)
+  int16_t yMin, yMax;
+};
+
 struct DeviceConfig {
   char deviceName[24];
   char haUrl[80];
@@ -83,10 +92,17 @@ struct DeviceConfig {
   uint8_t  powerSaveDimPct;       // backlight level while asleep (0 = fully off)
 
   // --- Touch calibration (on-device wizard; see the touch-cal module) ---
-  bool    touchCalibrated;        // false = readTouchXY() uses the compiled TOUCH_* defaults
-  bool    touchSwapXY;            // true = raw p.y drives screen X (panel axes transposed)
-  int16_t touchXMin, touchXMax;   // raw range mapped to screen X 0..W-1 (min may exceed max = inverted)
-  int16_t touchYMin, touchYMax;
+  // One slot per TFT_eSPI rotation value (0-3), indexed by cfg.rotation
+  // directly - NOT one slot per portrait/landscape orientation class.
+  // XPT2046_Touchscreen's own setRotation() applies a different raw-
+  // coordinate transform for all four rotation values (confirmed from its
+  // source: each case swaps/inverts x and y differently, including
+  // between a rotation and its own 180-flip), so a calibration captured
+  // at one rotation is not valid at any other - each of the 4 genuinely
+  // needs its own. Lets a panel that's already been calibrated at a given
+  // rotation stay calibrated when the user switches back to it, instead
+  // of re-running the wizard every time.
+  TouchCal touchCal[4];
 
   uint8_t pageCount;
   PageConfig pages[MAX_PAGES];

@@ -1053,10 +1053,12 @@ void setDefaultConfig() {
   cfg.powerSaveSec = 60;
   cfg.powerSaveDimPct = 0;
 
-  cfg.touchCalibrated = false;
-  cfg.touchSwapXY = false;
-  cfg.touchXMin = TOUCH_X_MIN; cfg.touchXMax = TOUCH_X_MAX;
-  cfg.touchYMin = TOUCH_Y_MIN; cfg.touchYMax = TOUCH_Y_MAX;
+  for (int r = 0; r < 4; r++) {
+    cfg.touchCal[r].calibrated = false;
+    cfg.touchCal[r].swapXY = false;
+    cfg.touchCal[r].xMin = TOUCH_X_MIN; cfg.touchCal[r].xMax = TOUCH_X_MAX;
+    cfg.touchCal[r].yMin = TOUCH_Y_MIN; cfg.touchCal[r].yMax = TOUCH_Y_MAX;
+  }
 
   cfg.pageCount = 4;
 
@@ -1219,12 +1221,40 @@ bool loadConfig() {
   cfg.powerSave            = doc["powerSave"] | false;
   cfg.powerSaveSec         = (uint16_t)constrain((int)(doc["powerSaveSec"] | 60), 5, 3600);
   cfg.powerSaveDimPct      = (uint8_t)constrain((int)(doc["powerSaveDimPct"] | 0), 0, 100);
-  cfg.touchCalibrated      = doc["touchCalibrated"] | false;
-  cfg.touchSwapXY          = doc["touchSwapXY"] | false;
-  cfg.touchXMin = doc["touchXMin"] | TOUCH_X_MIN;
-  cfg.touchXMax = doc["touchXMax"] | TOUCH_X_MAX;
-  cfg.touchYMin = doc["touchYMin"] | TOUCH_Y_MIN;
-  cfg.touchYMax = doc["touchYMax"] | TOUCH_Y_MAX;
+  // Touch calibration: one slot per rotation (see TouchCal in
+  // config_types.h for why). Defaults first, then either the current
+  // array format or a migration from the old single-calibration format -
+  // cfg.rotation is already resolved above, so an old config's one
+  // calibration migrates into the slot for whatever rotation it was
+  // actually captured at, not slot 0 blindly.
+  for (int r = 0; r < 4; r++) {
+    cfg.touchCal[r].calibrated = false;
+    cfg.touchCal[r].swapXY = false;
+    cfg.touchCal[r].xMin = TOUCH_X_MIN; cfg.touchCal[r].xMax = TOUCH_X_MAX;
+    cfg.touchCal[r].yMin = TOUCH_Y_MIN; cfg.touchCal[r].yMax = TOUCH_Y_MAX;
+  }
+  if (doc.containsKey("touchCal")) {
+    JsonArray tcArr = doc["touchCal"].as<JsonArray>();
+    int ti = 0;
+    for (JsonObject o : tcArr) {
+      if (ti >= 4) break;
+      cfg.touchCal[ti].calibrated = o["c"] | false;
+      cfg.touchCal[ti].swapXY     = o["s"] | false;
+      cfg.touchCal[ti].xMin = o["x0"] | TOUCH_X_MIN;
+      cfg.touchCal[ti].xMax = o["x1"] | TOUCH_X_MAX;
+      cfg.touchCal[ti].yMin = o["y0"] | TOUCH_Y_MIN;
+      cfg.touchCal[ti].yMax = o["y1"] | TOUCH_Y_MAX;
+      ti++;
+    }
+  } else if (doc.containsKey("touchCalibrated")) {
+    TouchCal& t = cfg.touchCal[cfg.rotation];
+    t.calibrated = doc["touchCalibrated"] | false;
+    t.swapXY     = doc["touchSwapXY"] | false;
+    t.xMin = doc["touchXMin"] | TOUCH_X_MIN;
+    t.xMax = doc["touchXMax"] | TOUCH_X_MAX;
+    t.yMin = doc["touchYMin"] | TOUCH_Y_MIN;
+    t.yMax = doc["touchYMax"] | TOUCH_Y_MAX;
+  }
 
   JsonArray pagesArr = doc["pages"].as<JsonArray>();
   cfg.pageCount = 0;
@@ -1306,12 +1336,18 @@ void buildConfigJson(JsonDocument& doc) {
   doc["powerSave"] = cfg.powerSave;
   doc["powerSaveSec"] = cfg.powerSaveSec;
   doc["powerSaveDimPct"] = cfg.powerSaveDimPct;
-  doc["touchCalibrated"] = cfg.touchCalibrated;
-  doc["touchSwapXY"] = cfg.touchSwapXY;
-  doc["touchXMin"] = cfg.touchXMin;
-  doc["touchXMax"] = cfg.touchXMax;
-  doc["touchYMin"] = cfg.touchYMin;
-  doc["touchYMax"] = cfg.touchYMax;
+  // One touch-calibration slot per rotation - see TouchCal in
+  // config_types.h. Short keys (c/s/x0/x1/y0/y1) since this repeats 4x.
+  JsonArray tcArr = doc.createNestedArray("touchCal");
+  for (int r = 0; r < 4; r++) {
+    JsonObject o = tcArr.createNestedObject();
+    o["c"]  = cfg.touchCal[r].calibrated;
+    o["s"]  = cfg.touchCal[r].swapXY;
+    o["x0"] = cfg.touchCal[r].xMin;
+    o["x1"] = cfg.touchCal[r].xMax;
+    o["y0"] = cfg.touchCal[r].yMin;
+    o["y1"] = cfg.touchCal[r].yMax;
+  }
 
   JsonArray pagesArr = doc.createNestedArray("pages");
   for (int i = 0; i < cfg.pageCount; i++) {
@@ -2131,16 +2167,19 @@ bool readTouchXY(int& x, int& y) {
   gLastInteractionMs = millis(); // any contact keeps the screen awake (power-save)
   TS_Point p = ts.getPoint();
 
-  // cfg.touch* default to the compiled TOUCH_* constants; the on-device
-  // calibration wizard overwrites them (and can set touchSwapXY). map()
-  // handles a reversed (min > max) range, so an inverted axis just works.
-  long rawX = cfg.touchSwapXY ? p.y : p.x;
-  long rawY = cfg.touchSwapXY ? p.x : p.y;
-  rawX = constrain(rawX, (long)min(cfg.touchXMin, cfg.touchXMax), (long)max(cfg.touchXMin, cfg.touchXMax));
-  rawY = constrain(rawY, (long)min(cfg.touchYMin, cfg.touchYMax), (long)max(cfg.touchYMin, cfg.touchYMax));
+  // cfg.touchCal[cfg.rotation] defaults to the compiled TOUCH_* constants;
+  // the on-device calibration wizard overwrites that rotation's slot (and
+  // can set swapXY). One slot per rotation, not per portrait/landscape -
+  // see TouchCal in config_types.h. map() handles a reversed (min > max)
+  // range, so an inverted axis just works.
+  TouchCal& tc = cfg.touchCal[cfg.rotation];
+  long rawX = tc.swapXY ? p.y : p.x;
+  long rawY = tc.swapXY ? p.x : p.y;
+  rawX = constrain(rawX, (long)min(tc.xMin, tc.xMax), (long)max(tc.xMin, tc.xMax));
+  rawY = constrain(rawY, (long)min(tc.yMin, tc.yMax), (long)max(tc.yMin, tc.yMax));
 
-  x = (int)map(rawX, cfg.touchXMin, cfg.touchXMax, 0, SCREEN_W - 1);
-  y = (int)map(rawY, cfg.touchYMin, cfg.touchYMax, 0, SCREEN_H - 1);
+  x = (int)map(rawX, tc.xMin, tc.xMax, 0, SCREEN_W - 1);
+  y = (int)map(rawY, tc.yMin, tc.yMax, 0, SCREEN_H - 1);
   x = constrain(x, 0, SCREEN_W - 1);
   y = constrain(y, 0, SCREEN_H - 1);
   // ts.setRotation() (applyScreenRotation) already aligns the raw axes with
@@ -3938,10 +3977,14 @@ void handleStatusPageTap(int x, int y) {
   }
   if (x >= L.rotX && x < L.rotX + L.rotW && y >= L.rotY && y < L.rotY + L.rotH) {
     cfg.rotation = (cfg.rotation + 1) % 4;
-    cfg.touchCalibrated = false; // a new rotation needs its own touch calibration
-    gTouchCalActive = true;
-    gTouchCalFirstRun = false;
-    gTouchCalReady = false;
+    // Only run the wizard if this rotation has never been calibrated -
+    // each rotation keeps its own slot (see TouchCal in config_types.h),
+    // so switching back to one already set up just reuses it.
+    if (!cfg.touchCal[cfg.rotation].calibrated) {
+      gTouchCalActive = true;
+      gTouchCalFirstRun = false;
+      gTouchCalReady = false;
+    }
     applyScreenRotation();
     saveConfig();
     pageDirty = true;
@@ -4531,8 +4574,10 @@ void handlePanelPage() {
   h += "</section></form>";
 
   h += "<section class='card'><h2>Touchscreen</h2>";
-  h += "<div class='muted' style='margin-bottom:8px'>Calibration is per-panel. Run this if taps land off-target"
-       + String(cfg.touchCalibrated ? "" : " &mdash; this panel is still on the built-in defaults") + ".</div>";
+  h += "<div class='muted' style='margin-bottom:8px'>Calibration is per-panel <b>and per rotation</b> - run this "
+       "again after changing Screen rotation above if taps land off-target"
+       + String(cfg.touchCal[cfg.rotation].calibrated ? "" : " &mdash; the current rotation is still on the built-in defaults")
+       + ".</div>";
   h += "<form method='POST' action='/calibrate-touch'>";
   h += "<button type='submit'>Calibrate on the panel</button></form>";
   h += "<div class='muted' style='margin-top:6px'>The panel shows 3 targets to tap. Takes ~15 seconds.</div>";
@@ -5124,11 +5169,13 @@ void handleSaveDevice() {
     if (server.hasArg("rotation")) newRotation = (uint8_t)constrain(server.arg("rotation").toInt(), 0, 3);
     if (newRotation != cfg.rotation) {
       cfg.rotation = newRotation;
-      // Touch calibration is rotation-specific - re-run the wizard on a change.
-      cfg.touchCalibrated = false;
-      gTouchCalActive = true;
-      gTouchCalFirstRun = false;
-      gTouchCalReady = false;
+      // Only run the wizard if this rotation has never been calibrated -
+      // each rotation keeps its own slot (see TouchCal in config_types.h).
+      if (!cfg.touchCal[cfg.rotation].calibrated) {
+        gTouchCalActive = true;
+        gTouchCalFirstRun = false;
+        gTouchCalReady = false;
+      }
     }
     applyScreenRotation();
     pageDirty = true;
@@ -6166,15 +6213,19 @@ void touchCalLoop() {
     return;
   }
 
-  cfg.touchSwapXY = swap;
-  cfg.touchXMin = (int16_t)constrain(xMin, 0, 4095);
-  cfg.touchXMax = (int16_t)constrain(xMax, 0, 4095);
-  cfg.touchYMin = (int16_t)constrain(yMin, 0, 4095);
-  cfg.touchYMax = (int16_t)constrain(yMax, 0, 4095);
-  cfg.touchCalibrated = true;
+  // The wizard runs at whatever rotation is currently active (ts and tft
+  // are already in sync via applyScreenRotation()), so the samples it just
+  // collected are only valid for cfg.rotation's own slot.
+  TouchCal& tc = cfg.touchCal[cfg.rotation];
+  tc.swapXY = swap;
+  tc.xMin = (int16_t)constrain(xMin, 0, 4095);
+  tc.xMax = (int16_t)constrain(xMax, 0, 4095);
+  tc.yMin = (int16_t)constrain(yMin, 0, 4095);
+  tc.yMax = (int16_t)constrain(yMax, 0, 4095);
+  tc.calibrated = true;
   saveConfig();
-  Serial.printf("[touch] calibrated: swap=%d X[%d..%d] Y[%d..%d]\n",
-                swap, cfg.touchXMin, cfg.touchXMax, cfg.touchYMin, cfg.touchYMax);
+  Serial.printf("[touch] calibrated rotation %d: swap=%d X[%d..%d] Y[%d..%d]\n",
+                cfg.rotation, swap, tc.xMin, tc.xMax, tc.yMin, tc.yMax);
 
   touchCalMessage("Touch setup saved", "", fixColor565(0x2E91), 1300);
   touchCalFinish();
@@ -6241,14 +6292,15 @@ void setup() {
   applyTheme(cfg.darkTheme);
   applyTimezone();
 
-  // Touch calibration: run the wizard on first boot (nothing saved), or if a
+  // Touch calibration: run the wizard on first boot (nothing saved for the
+  // active rotation's slot - see TouchCal in config_types.h), or if a
   // finger is held on the screen for ~2.5 s at boot (escape hatch for a
   // mis-calibrated panel). loop() drives it once it starts.
   bool touchHeld = ts.touched();
   for (int i = 0; touchHeld && i < 25; i++) { delay(100); touchHeld = ts.touched(); }
-  if (!gProvisioning && (!cfg.touchCalibrated || touchHeld)) {
+  if (!gProvisioning && (!cfg.touchCal[cfg.rotation].calibrated || touchHeld)) {
     gTouchCalActive = true;
-    gTouchCalFirstRun = !cfg.touchCalibrated;
+    gTouchCalFirstRun = !cfg.touchCal[cfg.rotation].calibrated;
     gTouchCalReady = false;
   }
 

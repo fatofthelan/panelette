@@ -73,14 +73,37 @@ build-config changes.
 
 ## Screen orientation
 
-Portrait always. `cfg.flipScreen` toggles `tft.setRotation()` between 2
-(default) and 0 (180 flip, for USB-port-on-the-other-side mounting) via
-`applyScreenRotation()`. **Touch is left on its rotation-2 calibration** -
-`readTouchXY()` point-reflects the mapped x/y (`SCREEN_W-1-x`, `SCREEN_H-1-y`)
-when flipped, rather than re-calibrating. Toggle is on the Status page and
-in the web Device card. If a flip shows a small pixel offset/black band,
-that's a CGRAM-offset quirk on some CYD ST7789 units - add `TFT_ROW_OFFSET`
-/ `TFT_COL_OFFSET` build flags.
+Full 4-way rotation, not just portrait. `cfg.rotation` (`uint8_t`, 0-3) *is*
+the `TFT_eSPI` rotation value (0/90/180/270°) directly - no separate
+`flipScreen`/`orientation` fields. 2 is the shipped default (portrait, USB
+at bottom); 0 is portrait flipped; 1/3 are landscape (for the alternate
+mount). Toggle is the Status page's rotate button (cycles 0->1->2->3->0)
+and a 4-way `<select>` in the web Device card.
+
+- **`SCREEN_W`/`SCREEN_H` and the tile grid are runtime, not `const`.**
+  `applyLayout()` (called by `applyScreenRotation()`) recomputes them from
+  `landscapeMode()` (`cfg.rotation == 1 || 3`): 240x320 / 2x3 grid in
+  portrait, 320x240 / 3x2 in landscape. Every other page's geometry that
+  used to be `const int X = f(SCREEN_W/H)` - Status, Forecast, the Timers
+  countdown view, the brightness overlay, the timer-expiry dialog, the
+  Wi-Fi provisioning screen - had to become a plain global recomputed
+  inside `applyLayout()` too: C++ legally lets `const int x =
+  nonConstGlobal` compile as a *runtime*-initialized constant, so those all
+  silently froze at their startup (portrait) values and never updated on
+  a rotation change, even though nothing failed to compile. If a page
+  looks "frozen at portrait dimensions" in landscape, this is almost
+  certainly why - check whether its geometry is computed in
+  `applyLayout()` or still a stray `const`.
+- **Touch tracks rotation exactly, not just portrait/landscape.**
+  `applyScreenRotation()` calls `ts.setRotation(cfg.rotation)` right after
+  `tft.setRotation()`, so raw touch coordinates come in already aligned to
+  the current display orientation - no point-reflection hack needed (an
+  earlier one, for the old flip-only design, is gone). See "Touch handling
+  notes" below for why calibration itself still needs a separate slot per
+  exact rotation value, not just per portrait/landscape.
+- If a flip shows a small pixel offset/black band, that's a CGRAM-offset
+  quirk on some CYD ST7789 units - add `TFT_ROW_OFFSET` / `TFT_COL_OFFSET`
+  build flags.
 
 ## Display hardware config - the CYD is not one board
 
@@ -305,16 +328,32 @@ they render jagged.
 
 ## Touch handling notes
 
-- **Calibration is per-panel.** `cfg.touch{Calibrated,SwapXY,XMin,XMax,YMin,
-  YMax}` hold the raw->screen map; the compiled `TOUCH_*_MIN/MAX` constants are
-  only the defaults for an un-calibrated board. `readTouchXY()` uses the cfg
-  values (`map()` copes with a reversed range = inverted axis). The on-device
-  3-point wizard (`touchCalLoop()`, module above `setup()`) writes them:
-  averages the raw reading at 3 targets (TL/TR/BL), derives swap + per-axis
-  span, saves. Triggers: first boot (nothing saved), a finger held ~2.5 s at
-  boot, or `POST /calibrate-touch` (web UI Panel -> Touchscreen). 90 s timeout
-  keeps the old values. Runs at `setRotation(2)`; the `flipScreen` 180
-  point-reflection in `readTouchXY()` is unchanged and layers on top.
+- **Calibration is per-panel AND per rotation.** `cfg.touchCal[4]`
+  (`TouchCal` struct: `calibrated`/`swapXY`/`xMin`/`xMax`/`yMin`/`yMax`,
+  config_types.h) holds one slot per `cfg.rotation` value (0-3), indexed
+  directly by it - `readTouchXY()` and the wizard both use
+  `cfg.touchCal[cfg.rotation]`. This is **not** a portrait/landscape split -
+  confirmed straight from `XPT2046_Touchscreen.cpp`'s `setRotation()`
+  source, which applies a genuinely different raw x/y swap-and-invert for
+  all four rotation values, including between a rotation and its own
+  180-flip (0 and 2 are not interchangeable, nor are 1 and 3). So a
+  calibration captured at one rotation is only ever valid at that exact
+  rotation - each of the 4 needs its own slot, and there's no valid way to
+  reduce that to 2. The compiled `TOUCH_*_MIN/MAX` constants are only the
+  defaults for a slot that's never been calibrated. `map()` copes with a
+  reversed range = inverted axis. The on-device 3-point wizard
+  (`touchCalLoop()`, module above `setup()`) writes the *active* rotation's
+  slot: averages the raw reading at 3 targets (TL/TR/BL), derives swap +
+  per-axis span, saves. Triggers: first boot or a rotation change *if that
+  rotation's slot has never been calibrated* (switching back to an
+  already-calibrated rotation reuses its slot instead of re-prompting), a
+  finger held ~2.5 s at boot, or `POST /calibrate-touch` (web UI Panel ->
+  Touchscreen, always runs unconditionally regardless of slot state). 90 s
+  timeout keeps the old values for that slot.
+  An old config's single (pre-multi-rotation) calibration migrates into
+  the slot for whatever rotation was active when it was saved
+  (`cfg.rotation` is already resolved by the time `loadConfig()` reaches
+  the touch-cal fields), not blindly into slot 0.
 - Resistive touch (XPT2046) has real contact bounce at press/release
   transitions, and the Z (pressure) reading dips mid-drag. Several guards
   exist because of this:
