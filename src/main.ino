@@ -4451,7 +4451,7 @@ void handlePanelPage() {
            + "' value='" + String(val) + "' oninput='this.nextElementSibling.textContent=this.value'><b>" + String(val) + "</b></div>";
     };
     h += "<label>Brightness mode</label>";
-    blRadio("manual",   "Manual &mdash; one fixed level");
+    blRadio("manual",   "User defined (default 90%)");
     blRadio("schedule", "Schedule &mdash; day / night levels by time");
     blRadio("sensor",   "Sensor &mdash; follow the room's light (LDR)");
     h += "<div id='bl-manual' class='bl-sub'>";
