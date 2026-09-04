@@ -94,8 +94,8 @@ map is shared (`[panel] common_flags`); only the driver / colour flags differ:
   (verified) is known to need it.
 
 Flash a matching env: `pio run -e cyd_ili9341 -t upload`. Symptom guide is in
-`platformio.ini`'s header comment. **Touch calibration (`TOUCH_*_MIN/MAX` in
-main.ino) is also per-panel** and will likely need redoing on a new board.
+`platformio.ini`'s header comment. **Touch is also per-panel** - the on-device
+3-point wizard runs on first boot and handles it (see "Touch handling notes").
 
 TFT_eSPI is configured entirely from `build_flags` (`-D USER_SETUP_LOADED=1`
 plus pins/flags), NOT from a `User_Setup.h` and NOT from a vendored copy in
@@ -243,6 +243,16 @@ they render jagged.
 
 ## Touch handling notes
 
+- **Calibration is per-panel.** `cfg.touch{Calibrated,SwapXY,XMin,XMax,YMin,
+  YMax}` hold the raw->screen map; the compiled `TOUCH_*_MIN/MAX` constants are
+  only the defaults for an un-calibrated board. `readTouchXY()` uses the cfg
+  values (`map()` copes with a reversed range = inverted axis). The on-device
+  3-point wizard (`touchCalLoop()`, module above `setup()`) writes them:
+  averages the raw reading at 3 targets (TL/TR/BL), derives swap + per-axis
+  span, saves. Triggers: first boot (nothing saved), a finger held ~2.5 s at
+  boot, or `POST /calibrate-touch` (web UI Panel -> Touchscreen). 90 s timeout
+  keeps the old values. Runs at `setRotation(2)`; the `flipScreen` 180
+  point-reflection in `readTouchXY()` is unchanged and layers on top.
 - Resistive touch (XPT2046) has real contact bounce at press/release
   transitions, and the Z (pressure) reading dips mid-drag. Several guards
   exist because of this:
@@ -408,6 +418,7 @@ earlier in the file) touch them - the auto-prototype gotcha.
   `TileRuntime.unavailable` (not persisted) - set from the HA `state`
   string; the tile shows "N/A" + a struck-through icon. `backlight*` /
   `ldr*` / `powerSave*` - the auto-dim feature (see the Backlight section).
+  `touch*` - the touch-calibration wizard (see Touch handling notes).
 - **Web UI is multi-page**, 6 sections: `/` (Overview - status +
   Screenshot/Reboot/Test), `/panel` (device basics + theme + Display&Power),
   `/connection` (HA + Weather + Network + Wi-Fi), `/pages`, `/timers`,

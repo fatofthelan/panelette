@@ -30,6 +30,8 @@ configured from a built-in web UI — no YAML, no HA add-on.
 - **Auto-dim**: fixed brightness, a day/night schedule (clock or
   sunset/sunrise), or the onboard light sensor. Optional power-save that
   blanks the screen when idle — first tap wakes it.
+- **Setup on the device**: on first boot it runs a touch-calibration wizard
+  and (if no Wi-Fi is baked in) a captive-portal / Improv network setup.
 - **Web UI**: device + theme settings, HA URL/token, add/remove/reorder
   pages and tiles, entity picker and "add from an HA area", static-IP or
   DHCP, backup / restore, reboot.
