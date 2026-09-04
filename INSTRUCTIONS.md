@@ -383,8 +383,11 @@ the panel reboots afterward.
     `TFT_RGB_ORDER` between `TFT_BGR` and `TFT_RGB`
   - **small offset or a thin black band at an edge** &rarr; add
     `-D TFT_ROW_OFFSET=` / `-D TFT_COL_OFFSET=` to that env
-- Touch calibration (`TOUCH_*_MIN/MAX` in `src/main.ino`) is per-panel as well
-  &mdash; expect to redo it on a different board (see "Touch is offset" below).
+- Touch is per-panel too, but there's an **on-device calibration wizard** for
+  it &mdash; it runs automatically the first time a freshly-flashed board
+  boots (tap the 3 targets). Re-run it any time from the web UI
+  (**Panel &rarr; Touchscreen**) or by holding a finger on the screen for a
+  few seconds while the board powers on.
 
 **Panel shows "No WiFi connection"**
 - Re-check `include/secrets.h` (exact SSID and password, keep the quotes),
@@ -403,10 +406,12 @@ the panel reboots afterward.
 - The token's user must have permission to control that entity.
 
 **Touch is offset or unresponsive**
-- The touch calibration constants near the top of `src/main.ino`
-  (`TOUCH_X_MIN` ... `TOUCH_Y_MAX`) are tuned for a typical CYD. If yours is
-  noticeably off, those values can be adjusted; open an issue with what you're
-  seeing.
+- Run the calibration wizard: web UI &rarr; **Panel** &rarr; **Touchscreen**
+  &rarr; *Calibrate on the panel*, then tap the 3 targets. It also runs on the
+  first boot after flashing, and you can force it by holding a finger on the
+  screen while the board powers on.
+- Still unresponsive after that &mdash; check the XPT2046 wiring / that it's
+  the resistive-touch CYD; open an issue with what you're seeing.
 
 **Watch the panel's debug output**
 - In VS Code's PlatformIO status bar, click the **plug icon** ("Serial
