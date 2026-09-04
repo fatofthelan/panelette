@@ -86,6 +86,7 @@
 #include "NotoSansB30.h"
 #include "PlexMono16.h"  //                          IBM Plex Mono (typeface "mono")
 #include "PlexMono26.h"
+#include "WeatherIcons.h" // forecast-page cloud-puff bitmap - see ASSETS.md
 
 // =========================================================
 // WIFI / HA DEFAULTS
@@ -1832,6 +1833,64 @@ String weatherCodeLabel(int code) {
   return "--";
 }
 
+// The cloud-puff bitmap's native 64x64 canvas has the traced shape filling
+// ~31.6 of those 64 units wide, versus the old hand-drawn cloud (three
+// circles) filling ~22 units wide at the same `scale` value used
+// throughout the file's various drawWeatherIcon() call sites (weather
+// tile, forecast hero, forecast daily row, each with its own tuned scale
+// for that context). Scaling drawCloudPuff() by scale*this ratio keeps
+// every existing call site's cloud the same size as before, with no need
+// to retune each one for the new bitmap's slightly different proportions.
+static const float CLOUD_PUFF_SIZE_RATIO = 22.0f / 31.6f;
+
+// Renders the baked cloud-puff bitmap (WeatherIcons.h - see ASSETS.md for
+// where it comes from) centred at (cx, cy), box-downsampled from its
+// native 64x64 to whatever `scale` calls for (never upscaled in practice -
+// 64px covers every on-device use up to the forecast hero icon). Each
+// destination pixel averages its source box from both coverage layers,
+// then composites fill-then-stroke by reading the real pixel underneath
+// and blending toward it with blendColor565() - same "sample the actual
+// pixel, don't guess a bg colour" idea as UI_AA_READ elsewhere, just done
+// by hand: TFT_eSprite's drawPixel(x,y,color) override hides TFT_eSPI's
+// alpha-blend drawPixel(x,y,color,alpha) overload (C++ name hiding), so
+// that overload isn't callable through this function's templated T when
+// T is TFT_eSprite.
+template<typename T>
+void drawCloudPuff(T& d, int cx, int cy, float scale, uint16_t fillColor, uint16_t strokeColor) {
+  int size = max(1, (int)roundf(CLOUD_PUFF_FILL_W * scale));
+  int x0 = cx - size / 2, y0 = cy - size / 2;
+  for (int dy = 0; dy < size; dy++) {
+    int sy0 = (int)((long)dy * CLOUD_PUFF_FILL_H / size);
+    int sy1 = (int)((long)(dy + 1) * CLOUD_PUFF_FILL_H / size);
+    if (sy1 <= sy0) sy1 = sy0 + 1;
+    if (sy1 > CLOUD_PUFF_FILL_H) sy1 = CLOUD_PUFF_FILL_H;
+    for (int dx = 0; dx < size; dx++) {
+      int sx0 = (int)((long)dx * CLOUD_PUFF_FILL_W / size);
+      int sx1 = (int)((long)(dx + 1) * CLOUD_PUFF_FILL_W / size);
+      if (sx1 <= sx0) sx1 = sx0 + 1;
+      if (sx1 > CLOUD_PUFF_FILL_W) sx1 = CLOUD_PUFF_FILL_W;
+
+      uint32_t fillSum = 0, strokeSum = 0;
+      int cnt = 0;
+      for (int sy = sy0; sy < sy1; sy++) {
+        for (int sx = sx0; sx < sx1; sx++) {
+          fillSum   += pgm_read_byte(&CLOUD_PUFF_FILL[sy * CLOUD_PUFF_FILL_W + sx]);
+          strokeSum += pgm_read_byte(&CLOUD_PUFF_STROKE[sy * CLOUD_PUFF_FILL_W + sx]);
+          cnt++;
+        }
+      }
+      uint8_t fillA = fillSum / cnt, strokeA = strokeSum / cnt;
+      if (fillA == 0 && strokeA == 0) continue; // fully transparent here - leave the bg untouched
+
+      int px = x0 + dx, py = y0 + dy;
+      uint16_t c = d.readPixel(px, py);
+      if (fillA)   c = blendColor565(c, fillColor, fillA * 100 / 255);
+      if (strokeA) c = blendColor565(c, strokeColor, strokeA * 100 / 255);
+      d.drawPixel(px, py, c);
+    }
+  }
+}
+
 // Templated so the same code draws into either the real display (tft) or
 // a sprite (sprTile) - TFT_eSPI's TFT_eSprite class shares the same
 // drawing method names as TFT_eSPI, so instantiating this per call-site
@@ -1891,33 +1950,15 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
   }
 
   // Cloud shape - base for partly-cloudy, overcast, rain, snow, storm.
-  // Two-pass "silhouette then inset fill" build: every edge is drawn with
-  // uiFillCircle/uiFillRR's default UI_AA_READ sampling, which blends
-  // against whatever pixel is actually there (true background on the
-  // silhouette pass, the stroke colour on the fill pass) instead of a
-  // single guessed bg colour. The old version stroked each puff's outline
-  // with drawSmoothCircle(), which can't sample - it always blended
-  // toward a flat cloudFill guess, which was wrong wherever one puff's
-  // edge crossed a notch of true background between the puffs. That
-  // mismatch is what showed up as light "dot" fringing along the cloud's
-  // silhouette.
-  int rL = S(7), rR = S(8), rT = S(7);
-  int cStroke = max(1, S(1));
-
-  // Pass 1: full-size silhouette in the stroke colour.
-  uiFillCircle(d, cx - S(6), cloudCy, rL, cloudStroke);
-  uiFillCircle(d, cx + S(5), cloudCy, rR, cloudStroke);
-  uiFillCircle(d, cx, cloudCy - S(4), rT, cloudStroke);
-  uiFillRR(d, cx - S(10), cloudCy - cStroke, S(22), S(8) + cStroke, S(4), cloudStroke, UI_AA_READ);
-
-  // Pass 2: same shapes inset by cStroke, filled on top - leaves a clean
-  // ring of the silhouette colour as the cloud's outline.
-  uiFillCircle(d, cx - S(6), cloudCy, max(1, rL - cStroke), cloudFill);
-  uiFillCircle(d, cx + S(5), cloudCy, max(1, rR - cStroke), cloudFill);
-  uiFillCircle(d, cx, cloudCy - S(4), max(1, rT - cStroke), cloudFill);
-  uiFillRR(d, cx - S(10) + cStroke, cloudCy, max(1, S(22) - 2 * cStroke), max(1, S(8) - cStroke),
-           max(0, S(4) - cStroke), cloudFill, UI_AA_READ);
-  d.drawFastHLine(cx - S(10), cloudCy + S(8), S(22), cloudStroke); // flat base edge - solid, no AA guess involved
+  // Traced from amCharts' free SVG weather icon pack (see ASSETS.md) with
+  // tools/svg2icon.py into WeatherIcons.h as two 8-bit coverage layers
+  // (fill, stroke), composited here by drawCloudPuff() using TFT_eSPI's
+  // own alpha-over-real-background drawPixel() - real puffy-cloud
+  // silhouette instead of three overlapping circles, and no guessed bg
+  // colour anywhere (drawCloudPuff always samples the actual pixel
+  // underneath, so it composites correctly on both the plain page bg and
+  // a sprite tile's card colour with no cutColor plumbing needed).
+  drawCloudPuff(d, cx, cloudCy, scale * CLOUD_PUFF_SIZE_RATIO, cloudFill, cloudStroke);
 
   if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
     // Rain

@@ -27,6 +27,11 @@ build-config changes.
   the anti-aliased `.vlw` fonts as `PROGMEM` byte arrays. See "Fonts".
 - `tools/ttf2vlw.py` - the TTF -> `.vlw` converter that generated those
   (freetype-py, no Processing IDE needed). See "Fonts".
+- `src/WeatherIcons.h` - the forecast page's cloud-puff bitmap (two 8-bit
+  coverage layers, PROGMEM), traced from amCharts' free SVG weather icon
+  pack. See "Forecast page icons" and `ASSETS.md`.
+- `tools/svg2icon.py` - the SVG-path -> coverage-bitmap rasterizer that
+  generated it (stdlib only - no cairosvg/Pillow). See "Forecast page icons".
 - `include/secrets.h` - OPTIONAL `WIFI_SSID` / `WIFI_PASSWORD` `#define`s.
   Gitignored. `#if __has_include` in main.ino - the firmware builds and
   runs without it (on-device Wi-Fi setup takes over). Copy from
@@ -203,6 +208,44 @@ smooth-fonts** - the old numbered bitmap fonts (1/2/4) and the GFXFF
   even though nothing uses them now - `TFT_eSPI.h` includes them all when
   `LOAD_GFXFF` is set (still in `build_flags`), and re-including caused
   "redefinition" errors (no include guards).
+
+## Forecast page icons (bitmap cloud + procedural accents)
+
+The forecast page's cloud shape is a baked bitmap (`WeatherIcons.h`,
+`drawCloudPuff()` in main.ino), traced from amCharts' free SVG weather
+icon pack (Apache 2.0 - see `ASSETS.md`) via `tools/svg2icon.py`. It
+replaced an earlier hand-drawn three-overlapping-circles cloud that never
+quite read as a real cloud silhouette. The sun/moon/rain/snow/thunderbolt
+accents around it are still drawn procedurally (`drawWeatherIcon()`) -
+those never had a shape problem, only the cloud did.
+
+- **`TFT_eSprite::drawPixel(x,y,color)` hides TFT_eSPI's alpha-blend
+  overload.** `TFT_eSPI::drawPixel(x, y, color, alpha, bg_color =
+  UI_AA_READ)` exists and is exactly the "blend toward the real pixel
+  underneath" primitive `drawCloudPuff()` wants - but `TFT_eSprite`
+  (inherits from `TFT_eSPI`) only re-declares the plain 3-arg
+  `drawPixel(x,y,color)`, and in C++ a derived class re-declaring a name
+  hides *every* base-class overload of that name, not just the one with a
+  matching signature. Since `drawCloudPuff()` is templated over `T` to
+  work on both `tft` and a sprite, the 4-arg call compiles fine for
+  `T=TFT_eSPI` but fails to resolve for `T=TFT_eSprite`. Fix: don't call
+  the alpha-blend overload at all - do it by hand with `d.readPixel()` +
+  `blendColor565()` + the plain 3-arg `d.drawPixel()`, all of which
+  resolve correctly on both types via virtual dispatch.
+- `drawCloudPuff()` box-downsamples the bitmap's native 64x64 to whatever
+  `scale` a call site needs (always downscaling in practice - 64px covers
+  even the forecast hero icon) and never upscales blurrily.
+  `CLOUD_PUFF_SIZE_RATIO` converts an existing call site's old `scale`
+  value (tuned against the old three-circle cloud's footprint) to the
+  bitmap's slightly different native proportions, so no call site needed
+  retuning when the bitmap was swapped in.
+- Not yet done: amCharts' "layered" look (a smaller, lighter cloud peeking
+  from behind the main one, used for the fully-overcast condition with no
+  sun/moon) reuses this exact same path at a second scale/color - see
+  `ASSETS.md` for the plan. Currently every cloud-bearing condition
+  (partly-cloudy, overcast, rain, snow, storm) draws the same single puff.
+- To regenerate after editing `tools/svg2icon.py`:
+  `python3 tools/svg2icon.py > src/WeatherIcons.h`.
 
 ## Theme system (three orthogonal axes + dark/light)
 
