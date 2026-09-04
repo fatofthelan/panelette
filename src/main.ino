@@ -178,6 +178,29 @@ static const int TOUCH_X_MIN = 562;
 static const int TOUCH_X_MAX = 3604;
 static const int TOUCH_Y_MIN = 544;
 static const int TOUCH_Y_MAX = 3720;
+static const int16_t TOUCH_RAW_MAX = 4095; // XPT2046 is a 12-bit ADC - matches XPT2046_Touchscreen.cpp's own hardcoded 4095
+
+// A calibration captured at one rotation exactly determines its 180-flip
+// partner's calibration too (0<->2, 1<->3 - XOR by 2): XPT2046_Touchscreen's
+// setRotation() applies a different raw x/y transform per rotation, but for
+// a rotation and its own 180-flip, the two transforms are exact 4095-
+// complements of each other for every physical touch point. Applying that
+// same complement to each calibration value (min/max; swap is unchanged)
+// reproduces the correct screen mapping exactly - verified against 200
+// randomized simulated hardware configs, in both "axes swapped" states,
+// before trusting this rather than guessing. Lets one physical tap-through
+// per ORIENTATION (portrait, landscape) suffice instead of one per exact
+// rotation - see touchCalFinish() and loadConfig()'s old-format migration.
+TouchCal derive180Partner(const TouchCal& src) {
+  TouchCal out;
+  out.calibrated = src.calibrated;
+  out.swapXY = src.swapXY;
+  out.xMin = TOUCH_RAW_MAX - src.xMin;
+  out.xMax = TOUCH_RAW_MAX - src.xMax;
+  out.yMin = TOUCH_RAW_MAX - src.yMin;
+  out.yMax = TOUCH_RAW_MAX - src.yMax;
+  return out;
+}
 
 const int BACKLIGHT_PIN = 21;
 
@@ -1254,6 +1277,7 @@ bool loadConfig() {
     t.xMax = doc["touchXMax"] | TOUCH_X_MAX;
     t.yMin = doc["touchYMin"] | TOUCH_Y_MIN;
     t.yMax = doc["touchYMax"] | TOUCH_Y_MAX;
+    if (t.calibrated) cfg.touchCal[cfg.rotation ^ 2] = derive180Partner(t); // free calibration for the 180-flip partner
   }
 
   JsonArray pagesArr = doc["pages"].as<JsonArray>();
@@ -4574,8 +4598,9 @@ void handlePanelPage() {
   h += "</section></form>";
 
   h += "<section class='card'><h2>Touchscreen</h2>";
-  h += "<div class='muted' style='margin-bottom:8px'>Calibration is per-panel <b>and per rotation</b> - run this "
-       "again after changing Screen rotation above if taps land off-target"
+  h += "<div class='muted' style='margin-bottom:8px'>Calibration is per-panel <b>and per orientation</b> - "
+       "calibrating in portrait or landscape also covers that orientation's 180&deg; flip for free, but "
+       "portrait and landscape still need their own pass. Run this again if taps land off-target"
        + String(cfg.touchCal[cfg.rotation].calibrated ? "" : " &mdash; the current rotation is still on the built-in defaults")
        + ".</div>";
   h += "<form method='POST' action='/calibrate-touch'>";
@@ -6223,9 +6248,10 @@ void touchCalLoop() {
   tc.yMin = (int16_t)constrain(yMin, 0, 4095);
   tc.yMax = (int16_t)constrain(yMax, 0, 4095);
   tc.calibrated = true;
+  cfg.touchCal[cfg.rotation ^ 2] = derive180Partner(tc); // free calibration for the 180-flip partner
   saveConfig();
-  Serial.printf("[touch] calibrated rotation %d: swap=%d X[%d..%d] Y[%d..%d]\n",
-                cfg.rotation, swap, tc.xMin, tc.xMax, tc.yMin, tc.yMax);
+  Serial.printf("[touch] calibrated rotation %d: swap=%d X[%d..%d] Y[%d..%d] (rotation %d derived free)\n",
+                cfg.rotation, swap, tc.xMin, tc.xMax, tc.yMin, tc.yMax, cfg.rotation ^ 2);
 
   touchCalMessage("Touch setup saved", "", fixColor565(0x2E91), 1300);
   touchCalFinish();

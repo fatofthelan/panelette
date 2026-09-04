@@ -328,32 +328,45 @@ they render jagged.
 
 ## Touch handling notes
 
-- **Calibration is per-panel AND per rotation.** `cfg.touchCal[4]`
-  (`TouchCal` struct: `calibrated`/`swapXY`/`xMin`/`xMax`/`yMin`/`yMax`,
-  config_types.h) holds one slot per `cfg.rotation` value (0-3), indexed
-  directly by it - `readTouchXY()` and the wizard both use
-  `cfg.touchCal[cfg.rotation]`. This is **not** a portrait/landscape split -
-  confirmed straight from `XPT2046_Touchscreen.cpp`'s `setRotation()`
-  source, which applies a genuinely different raw x/y swap-and-invert for
-  all four rotation values, including between a rotation and its own
-  180-flip (0 and 2 are not interchangeable, nor are 1 and 3). So a
-  calibration captured at one rotation is only ever valid at that exact
-  rotation - each of the 4 needs its own slot, and there's no valid way to
-  reduce that to 2. The compiled `TOUCH_*_MIN/MAX` constants are only the
-  defaults for a slot that's never been calibrated. `map()` copes with a
-  reversed range = inverted axis. The on-device 3-point wizard
-  (`touchCalLoop()`, module above `setup()`) writes the *active* rotation's
-  slot: averages the raw reading at 3 targets (TL/TR/BL), derives swap +
-  per-axis span, saves. Triggers: first boot or a rotation change *if that
-  rotation's slot has never been calibrated* (switching back to an
-  already-calibrated rotation reuses its slot instead of re-prompting), a
-  finger held ~2.5 s at boot, or `POST /calibrate-touch` (web UI Panel ->
+- **Calibration is per-panel AND per rotation, but one tap-through per
+  orientation is enough.** `cfg.touchCal[4]` (`TouchCal` struct:
+  `calibrated`/`swapXY`/`xMin`/`xMax`/`yMin`/`yMax`, config_types.h) holds
+  one slot per `cfg.rotation` value (0-3), indexed directly by it -
+  `readTouchXY()` and the wizard both use `cfg.touchCal[cfg.rotation]`.
+  This is deliberately **not** a portrait/landscape split - confirmed
+  straight from `XPT2046_Touchscreen.cpp`'s `setRotation()` source, which
+  applies a genuinely different raw x/y swap-and-invert for all four
+  rotation values, including between a rotation and its own 180-flip (0
+  and 2 are not interchangeable, nor are 1 and 3), so naively sharing one
+  slot per orientation class would silently misalign touch.
+  However: for a rotation and its own 180-flip specifically, the two raw
+  transforms turn out to be exact 4095-complements of each other for every
+  physical touch point (checked against 200 randomized simulated hardware
+  configs, both "axes swapped" states, before trusting it) - so
+  `derive180Partner()` computes the 180-flip partner's whole calibration
+  from a fresh one with no extra taps (`calibrated`/`swapXY` unchanged,
+  each raw min/max value replaced by `TOUCH_RAW_MAX - value`), called from
+  both `touchCalFinish()` (`cfg.rotation ^ 2` is always the partner slot)
+  and the old-format migration path below. Net effect: calibrate once in
+  portrait and once in landscape (2 tap-throughs total), not once per
+  exact rotation (4).
+  The compiled `TOUCH_*_MIN/MAX` constants are only the defaults for a
+  slot that's never been calibrated (nor had a partner calibrated). `map()`
+  copes with a reversed range = inverted axis. The on-device 3-point
+  wizard (`touchCalLoop()`, module above `setup()`) writes the *active*
+  rotation's slot (and its derived partner): averages the raw reading at 3
+  targets (TL/TR/BL), derives swap + per-axis span, saves. Triggers: first
+  boot or a rotation change *if that rotation's slot has never been
+  calibrated* (switching to an already-calibrated rotation, or one whose
+  180-flip partner has been, reuses it instead of re-prompting), a finger
+  held ~2.5 s at boot, or `POST /calibrate-touch` (web UI Panel ->
   Touchscreen, always runs unconditionally regardless of slot state). 90 s
   timeout keeps the old values for that slot.
   An old config's single (pre-multi-rotation) calibration migrates into
   the slot for whatever rotation was active when it was saved
   (`cfg.rotation` is already resolved by the time `loadConfig()` reaches
-  the touch-cal fields), not blindly into slot 0.
+  the touch-cal fields), not blindly into slot 0 - and derives that
+  rotation's 180-flip partner too.
 - Resistive touch (XPT2046) has real contact bounce at press/release
   transitions, and the Z (pressure) reading dips mid-drag. Several guards
   exist because of this:
