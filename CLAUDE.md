@@ -533,14 +533,32 @@ earlier in the file) touch them - the auto-prototype gotcha.
   string; the tile shows "N/A" + a struck-through icon. `backlight*` /
   `ldr*` / `powerSave*` - the auto-dim feature (see the Backlight section).
   `touch*` - the touch-calibration wizard (see Touch handling notes).
-- **Web UI is multi-page**, 6 sections: `/` (Overview - status +
-  Screenshot/Reboot/Test), `/panel` (device basics + theme + Display&Power),
-  `/connection` (HA + Weather + Network + Wi-Fi), `/pages`, `/timers`,
-  `/backup`. Shared header via `settingsPageTop(title, navKey)` (heading +
-  `settingsNav()` + one-shot `gSaveNotice`) and `settingsFooter()`
-  (dirty-guard + close). `settingsNav()` is a 6-cell CSS grid - `repeat(3,1fr)`
-  on phones, `repeat(6,1fr)` at >=600px - even both ways. Split keeps the
-  biggest single response ~8-14 KB instead of one ~40 KB page.
+- **Web UI is multi-page**, 6 sections: `/` (Overview - status + Reboot/Test),
+  `/panel` (device basics + theme + Display&Power), `/connection` (HA +
+  Weather + Network + Wi-Fi), `/pages`, `/timers`, `/backup`. Shared header
+  via `settingsPageTop(title, navKey)` (heading + `settingsNav()` + one-shot
+  `gSaveNotice`) and `settingsFooter()` (dirty-guard + close). `settingsNav()`
+  is a 6-cell CSS grid - `repeat(3,1fr)` on phones, `repeat(6,1fr)` at
+  >=600px - even both ways. Split keeps the biggest single response ~8-14 KB
+  instead of one ~40 KB page.
+- **Overview's Firmware row checks for updates client-side, not on-device.**
+  `fetch()`, run by the *browser*, hits GitHub's public releases API
+  (`api.github.com/repos/.../releases/latest`) directly and compares
+  `tag_name` against `FW_VERSION` (semver-ish major.minor.patch compare, not
+  a string compare - `1.10.0` must beat `1.9.0`). This deliberately never
+  touches the ESP32's own network stack: the panel's "plain `http://` only,
+  no TLS" limitation (see Home Assistant integration, below) is about the
+  panel making outbound HTTPS/TLS connections itself, which is a real
+  constraint on this hardware - it doesn't apply to the *browser* doing the
+  HTTPS fetch, so update-checking sidesteps the whole problem for free.
+  Verified GitHub's endpoint actually sends `Access-Control-Allow-Origin: *`
+  (checked directly, not assumed) before relying on a cross-origin fetch
+  working from the panel's own `http://<device>.local` origin. Fails
+  gracefully to a neutral "Couldn't check" pill (not an alarming error
+  state) if the browser has no internet path to GitHub - firewalled LAN,
+  offline, whatever. The `.notice` info box under the row only appears
+  when an update is actually available, with the same browser-installer
+  instructions as the README.
 - **Several cards still POST `/save-device`** (Device, Theme, Home Assistant,
   Weather, Display&Power). `handleSaveDevice()` gates each card's writes
   behind a field unique to its form (`deviceName` / `haUrl` / `weatherName` /

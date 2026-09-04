@@ -4546,6 +4546,9 @@ void handleRoot() {
        String(wifi ? (WiFi.localIP().toString() + "  &middot;  " + htmlEscape(sanitizeHostname(cfg.deviceName)) + ".local") : String("&mdash;")) + "</span></div>";
   h += "<div class='row'><b>Home Assistant</b><br><span id='haStat' class='pill " + String(haPill) + "'>" +
        htmlEscape(haConnLabel(haConnState)) + "</span> <button type='button' onclick='haTest(this)'>Test</button></div>";
+  h += "<div class='row'><b>Firmware</b><br><span class='muted'>v" FW_VERSION "</span> "
+       "<span id='fwStat' class='pill'>Checking...</span>"
+       "<div id='fwNotice' class='notice' style='display:none;margin:8px 0 0'></div></div>";
   h += "</section>";
 
   h += "<section class='card'><h2>Quick actions</h2>";
@@ -4556,6 +4559,28 @@ void handleRoot() {
   h += "<script>function haTest(b){var s=document.getElementById('haStat');b.disabled=true;s.textContent='Testing...';s.className='pill warn';"
        "fetch('/ha-test').then(r=>r.text()).then(t=>{s.textContent=t;s.className='pill '+(t=='Connected'?'ok':'bad');b.disabled=false;})"
        ".catch(function(){s.textContent='Test failed';s.className='pill bad';b.disabled=false;});}</script>";
+  // Update check runs entirely in the browser against GitHub's public releases
+  // API (which sends Access-Control-Allow-Origin: *, verified before relying
+  // on it) - the panel itself never makes an outbound HTTPS request, so this
+  // needs no TLS/cert handling on the ESP32 side at all (that's the whole
+  // reason "no TLS on this hardware" for the web UI doesn't apply here: the
+  // browser is the HTTPS client, not the panel).
+  h += "<script>(function(){"
+       "var s=document.getElementById('fwStat'),box=document.getElementById('fwNotice'),cur='" FW_VERSION "';"
+       "function cmp(a,b){var pa=a.split('.').map(Number),pb=b.split('.').map(Number),n=Math.max(pa.length,pb.length);"
+       "for(var i=0;i<n;i++){var x=pa[i]||0,y=pb[i]||0;if(x!==y)return x-y;}return 0;}"
+       "fetch('https://api.github.com/repos/fatofthelan/panelette/releases/latest')"
+       ".then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){"
+       "var latest=(d.tag_name||'').replace(/^v/,'');if(!latest)throw 0;"
+       "if(cmp(latest,cur)>0){"
+       "s.textContent='Update available (v'+latest+')';s.className='pill warn';"
+       "box.style.display='block';"
+       "box.innerHTML='A newer version, <b>v'+latest+'</b>, is available.<br>Open the "
+       "<a href=\\'https://fatofthelan.github.io/panelette/\\' target=\\'_blank\\' rel=\\'noopener\\'>browser installer</a> "
+       "in Chrome, Edge or Opera, plug the panel in over USB, and click <b>Update</b>. Your Wi-Fi and saved settings are kept.';"
+       "}else{s.textContent='Up to date';s.className='pill ok';}"
+       "}).catch(function(){s.textContent=\"Couldn't check\";s.className='pill';});"
+       "})();</script>";
   h += settingsFooter();
   server.send(200, "text/html", h);
 }
