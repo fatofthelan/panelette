@@ -182,19 +182,23 @@ const int BACKLIGHT_PIN = 21;
 
 TFT_eSprite sprTile = TFT_eSprite(&tft);
 
-const int SCREEN_W = 240;
-const int SCREEN_H = 320;
+// Screen + tile-grid geometry. NOT const - applyLayout() rewrites these for
+// the active cfg.orientation: portrait = 240x320 with a 2x3 grid, landscape =
+// 320x240 with a 3x2 grid. Everything downstream reads these live values.
+int SCREEN_W = 240;
+int SCREEN_H = 320;
 const int HEADER_H = 34;
 const int FOOTER_H = 44;
+const int CELL_GAP = 8;
 
-// Tile grid geometry - 2 columns x 3 rows, same proportions proven out
-// in earlier work on this hardware.
-const int COL_X[2]   = {8, 124};
-const int GRID_Y[3]  = {42, 120, 198};
-const int CELL_W     = 108;
-const int CELL_H     = 70;
-const int CELL_GAP   = 8; // gap between the two columns
+int GRID_COLS = 2;
+int GRID_ROWS = 3;
+int COL_X[3]  = {8, 124, 0};       // x of each column (GRID_COLS entries used)
+int GRID_Y[3] = {42, 120, 198};    // y of each row    (GRID_ROWS entries used)
+int CELL_W    = 108;
+int CELL_H    = 70;
 // gCardRadius (rounded/square) is a runtime value - see applyCornerStyle()
+// landscapeMode() / applyLayout() are defined just after `DeviceConfig cfg`.
 
 // =========================================================
 // THEME
@@ -328,6 +332,22 @@ const char* timezonePosixByKey(const String& key) {
 DeviceConfig cfg;
 TileRuntime tileRuntime[MAX_PAGES][MAX_TILES];
 
+bool landscapeMode() { return strcmp(cfg.orientation, "landscape") == 0; }
+
+// Recompute SCREEN_* + the tile grid for cfg.orientation. Called by
+// applyScreenRotation() (which also sets the tft/ts hardware rotation).
+void applyLayout() {
+  if (landscapeMode()) { SCREEN_W = 320; SCREEN_H = 240; GRID_COLS = 3; GRID_ROWS = 2; }
+  else                 { SCREEN_W = 240; SCREEN_H = 320; GRID_COLS = 2; GRID_ROWS = 3; }
+
+  int contentH = SCREEN_H - HEADER_H - FOOTER_H;
+  int edge = landscapeMode() ? 6 : 8;
+  CELL_W = (SCREEN_W - 2 * edge - (GRID_COLS - 1) * CELL_GAP) / GRID_COLS;
+  CELL_H = (contentH - (GRID_ROWS - 1) * CELL_GAP - 2) / GRID_ROWS;
+  for (int c = 0; c < GRID_COLS; c++) COL_X[c] = edge + c * (CELL_W + CELL_GAP);
+  for (int r = 0; r < GRID_ROWS; r++) GRID_Y[r] = HEADER_H + 6 + r * (CELL_H + CELL_GAP);
+}
+
 // Set true this session if a configured static IP failed to associate and
 // we fell back to DHCP (shown on the Status page and in the web UI).
 bool staticIpFellBack = false;
@@ -356,8 +376,19 @@ void applyTheme(bool dark) {
 // Portrait either way; rotation 2 = USB on one side, 0 = flipped 180.
 // Touch stays on rotation 2 (its calibration was measured there) and
 // readTouchXY() point-reflects the mapped coords when flipped instead.
+// TFT_eSPI rotation for the current orientation + flip:
+//   portrait  = 2 (USB bottom-left) / 0 flipped
+//   landscape = 1 / 3 flipped
+int screenRotation() {
+  if (landscapeMode()) return cfg.flipScreen ? 3 : 1;
+  return cfg.flipScreen ? 0 : 2;
+}
+
 void applyScreenRotation() {
-  tft.setRotation(cfg.flipScreen ? 0 : 2);
+  applyLayout();                 // SCREEN_* + grid for the orientation
+  int r = screenRotation();
+  tft.setRotation(r);
+  ts.setRotation(r);             // touch raw coords come in display-aligned
 }
 
 // Applied once at boot, before WiFi.begin(). No-op for DHCP or if the
@@ -924,6 +955,7 @@ void setDefaultConfig() {
   cfg.darkTheme = true;
   cfg.use12Hour = false;
   cfg.flipScreen = false;
+  strlcpy(cfg.orientation, "portrait", sizeof(cfg.orientation));
   cfg.uiFontSize = 1;
   strlcpy(cfg.uiTypeface, "mono", sizeof(cfg.uiTypeface));           // sans | mono
   strlcpy(cfg.colorScheme, "phosphor", sizeof(cfg.colorScheme));     // cool | warm | phosphor | neutral
@@ -1066,6 +1098,8 @@ bool loadConfig() {
   cfg.darkTheme = doc["darkTheme"] | true;
   cfg.use12Hour = doc["use12Hour"] | false;
   cfg.flipScreen = doc["flipScreen"] | false;
+  strlcpy(cfg.orientation, doc["orientation"] | "portrait", sizeof(cfg.orientation));
+  if (strcmp(cfg.orientation,"portrait") && strcmp(cfg.orientation,"landscape")) strlcpy(cfg.orientation,"portrait",sizeof(cfg.orientation));
   cfg.uiFontSize = (uint8_t)constrain((int)(doc["uiFontSize"] | 1), 0, 2);
   strlcpy(cfg.uiTypeface, doc["uiTypeface"] | "sans", sizeof(cfg.uiTypeface));
   if (strcmp(cfg.uiTypeface, "sans") != 0 && strcmp(cfg.uiTypeface, "mono") != 0)
@@ -1175,6 +1209,7 @@ void buildConfigJson(JsonDocument& doc) {
   doc["darkTheme"] = cfg.darkTheme;
   doc["use12Hour"] = cfg.use12Hour;
   doc["flipScreen"] = cfg.flipScreen;
+  doc["orientation"] = cfg.orientation;
   doc["uiFontSize"] = cfg.uiFontSize;
   doc["uiTypeface"] = cfg.uiTypeface;
   doc["colorScheme"] = cfg.colorScheme;
@@ -1933,14 +1968,8 @@ bool readTouchXY(int& x, int& y) {
   y = (int)map(rawY, cfg.touchYMin, cfg.touchYMax, 0, SCREEN_H - 1);
   x = constrain(x, 0, SCREEN_W - 1);
   y = constrain(y, 0, SCREEN_H - 1);
-
-  // Touch stays on its rotation-2 calibration; when the display is flipped
-  // 180 (cfg.flipScreen) the whole panel is physically upside down, so the
-  // touch point is a 180 rotation of what the user means - undo it here.
-  if (cfg.flipScreen) {
-    x = SCREEN_W - 1 - x;
-    y = SCREEN_H - 1 - y;
-  }
+  // ts.setRotation() (applyScreenRotation) already aligns the raw axes with
+  // the display for the current orientation + flip, so no reflection here.
   return true;
 }
 
@@ -2563,15 +2592,16 @@ void haWsLoop() {
 // =========================================================
 void layoutPageTiles(PageConfig& pg, int outSlot[MAX_TILES]) {
   int cursor = 0;
+  int slots = GRID_COLS * GRID_ROWS;
   for (int i = 0; i < pg.tileCount; i++) {
     int size = pg.tiles[i].size;
     if (size == 2) {
-      if (cursor % 2 == 1) cursor++;
-      if (cursor >= 6) { outSlot[i] = -1; continue; }
+      if (cursor % GRID_COLS == GRID_COLS - 1) cursor++; // a wide tile can't straddle a row end
+      if (cursor + 1 >= slots) { outSlot[i] = -1; continue; }
       outSlot[i] = cursor;
       cursor += 2;
     } else {
-      if (cursor >= 6) { outSlot[i] = -1; continue; }
+      if (cursor >= slots) { outSlot[i] = -1; continue; }
       outSlot[i] = cursor;
       cursor += 1;
     }
@@ -2579,7 +2609,7 @@ void layoutPageTiles(PageConfig& pg, int outSlot[MAX_TILES]) {
 }
 
 void getSlotRect(int slot, bool wide, int& x, int& y, int& w, int& h) {
-  int row = slot / 2, col = slot % 2;
+  int row = slot / GRID_COLS, col = slot % GRID_COLS;
   x = COL_X[col];
   y = GRID_Y[row];
   w = wide ? (CELL_W * 2 + CELL_GAP) : CELL_W;
@@ -4258,8 +4288,13 @@ void handlePanelPage() {
   h += "<input name='areaName' value='" + htmlEscape(cfg.pages[0].name) + "' placeholder='e.g. Family Room'>";
   h += "<div class='check'><input type='checkbox' id='use12h' name='use12h'" + String(cfg.use12Hour ? " checked" : "") +
        "><label for='use12h' style='margin:0'>Use 12-hour clock (AM/PM)</label></div>";
+  h += "<label>Orientation</label><select name='orientation'>";
+  h += "<option value='portrait'" + String(landscapeMode() ? "" : " selected") + ">Portrait (2&times;3 tiles)</option>";
+  h += "<option value='landscape'" + String(landscapeMode() ? " selected" : "") + ">Landscape (3&times;2 tiles)</option>";
+  h += "</select>";
   h += "<div class='check'><input type='checkbox' id='flipScreen' name='flipScreen'" + String(cfg.flipScreen ? " checked" : "") +
-       "><label for='flipScreen' style='margin:0'>Flip screen 180&deg; (USB port on the other side)</label></div>";
+       "><label for='flipScreen' style='margin:0'>Flip 180&deg; (mount the other way up)</label></div>";
+  h += "<div class='muted' style='margin-top:2px'>Changing orientation or flip re-runs touch calibration on the panel.</div>";
   h += "<label>Time Zone</label><select name='timezone'>";
   for (int i = 0; i < TZ_TABLE_COUNT; i++) {
     h += "<option value='" + String(TZ_TABLE[i].key) + "'";
@@ -4865,8 +4900,22 @@ void handleSaveDevice() {
   }
   if (deviceForm) {
     cfg.use12Hour = server.hasArg("use12h"); // unchecked checkboxes are simply absent from the POST body
+    bool wasLandscape = landscapeMode();
+    bool wasFlip = cfg.flipScreen;
     cfg.flipScreen = server.hasArg("flipScreen");
+    if (server.hasArg("orientation")) {
+      String o = server.arg("orientation");
+      if (o == "portrait" || o == "landscape") strlcpy(cfg.orientation, o.c_str(), sizeof(cfg.orientation));
+    }
+    // Touch calibration is orientation/flip specific - re-run the wizard on a change.
+    if (landscapeMode() != wasLandscape || cfg.flipScreen != wasFlip) {
+      cfg.touchCalibrated = false;
+      gTouchCalActive = true;
+      gTouchCalFirstRun = false;
+      gTouchCalReady = false;
+    }
     applyScreenRotation();
+    pageDirty = true;
   }
   strlcpy(cfg.timezone, sanitizeTimezoneKey(server.hasArg("timezone") ? server.arg("timezone") : String(cfg.timezone)).c_str(), sizeof(cfg.timezone));
   applyTimezone();
@@ -5838,7 +5887,7 @@ void touchCalLoop() {
   gLastInteractionMs = millis(); // hold the backlight up during setup
 
   if (!gTouchCalReady) {
-    tft.setRotation(2);           // calibrate in the canonical orientation
+    applyScreenRotation();        // calibrate in the active orientation + flip
     gTouchCalStep = 0;
     gTouchCalEnterMs = millis();
     gTouchCalReady = true;

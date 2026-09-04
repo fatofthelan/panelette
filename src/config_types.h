@@ -40,6 +40,7 @@ struct DeviceConfig {
   bool darkTheme;
   bool use12Hour;
   bool flipScreen;   // true = rotate the display 180 deg (USB port on the other side)
+  char orientation[10];  // "portrait" (default, 2x3 grid) | "landscape" (3x2 grid)
   char timezone[24];
   uint8_t uiFontSize;  // 0 = Small, 1 = Medium (default), 2 = Large
   char uiTypeface[16]; // theme axis: "sans" (Noto Sans) | "mono" (Plex Mono, UPPERCASE + rules)
