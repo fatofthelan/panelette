@@ -1983,8 +1983,8 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
   // from amCharts' own transform on the back puff in cloudy.svg/thunder.svg
   // (translate(-10,-8), scale(0.6), composed with the outer group translate)
   // relative to the front puff's transform - see ASSETS.md.
+  float k = scale * CLOUD_PUFF_SIZE_RATIO; // pixels per native-canvas unit at this scale - also used below to place the rain/snow/bolt accessories against the bitmap's real edges
   if (layeredCloud) {
-    float k = scale * CLOUD_PUFF_SIZE_RATIO; // pixels per native-canvas unit at this scale
     int backCx = cx + (int)roundf(CLOUD_BACK_DX * k);
     int backCy = cloudCy + (int)roundf(CLOUD_BACK_DY * k);
     uint16_t cloudBackFill = blendColor565(cloudFill, fixColor565(TFT_WHITE), 55);
@@ -1993,19 +1993,50 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
   drawCloudPuff(d, cx, cloudCy, scale * CLOUD_PUFF_SIZE_RATIO, cloudFill, cloudStroke);
 
   if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
-    // Rain
+    // Rain - repositioned to start right at the bitmap cloud's actual
+    // bottom edge (10.8 native-canvas units below cloudCy - the old hand-
+    // drawn cloud's flat base sat at ~8, close but not exact now that the
+    // real edge is known) with a small filled tip so each streak reads as
+    // a drop, not just a dash.
+    int rainY0 = cloudCy + (int)roundf(10.8f * k);
     for (int i = -1; i <= 1; i++) {
-      d.drawWideLine(cx + i * S(7), cloudCy + S(9), cx + i * S(7) - S(2), cloudCy + S(15), 1.4f, rainColor, bg);
+      int rx1 = cx + i * S(7), ry1 = rainY0 + S(2);
+      int rx2 = rx1 - S(2), ry2 = rainY0 + S(8);
+      d.drawWideLine(rx1, ry1, rx2, ry2, 1.4f, rainColor, bg);
+      uiFillCircle(d, rx2, ry2, max(1, S(1)), rainColor);
     }
   } else if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86)) {
-    // Snow
+    // Snow - same repositioning against the real cloud edge; middle flake
+    // staggered lower so it doesn't read as one flat row.
+    int snowY0 = cloudCy + (int)roundf(11.5f * k);
+    int rSnow = max(1, S(1) + 1);
     for (int i = -1; i <= 1; i++) {
-      uiFillCircle(d, cx + i * S(7), cloudCy + S(12), max(1, S(1)), cloudFill);
+      int sy = snowY0 + (i == 0 ? S(4) : 0);
+      uiFillCircle(d, cx + i * S(7), sy, rSnow, cloudFill);
     }
   } else if (code >= 95) {
-    // Thunderstorm - simple bolt
-    d.fillTriangle(cx - S(2), cloudCy + S(8), cx + S(4), cloudCy + S(8), cx - S(1), cloudCy + S(16), sunColor);
-    d.fillTriangle(cx - S(1), cloudCy + S(16), cx + S(5), cloudCy + S(12), cx + S(2), cloudCy + S(20), sunColor);
+    // Thunderstorm - amCharts' own bolt polygon (thunder.svg), ear-clipped
+    // offline into 5 triangles (TFT_eSPI has no general filled-polygon
+    // primitive - see ASSETS.md for the derivation) and placed in the
+    // same native-canvas frame as the cloud, using the same `k`. Replaces
+    // the old rough two-triangle zigzag approximation.
+    static const float BOLT_PTS[7][2] = {
+      {-3.84f, 2.52f}, {3.6f, 2.52f}, {-1.32f, 11.16f}, {3.36f, 11.16f},
+      {-7.2f, 23.52f}, {-3.12f, 14.28f}, {-7.68f, 14.28f}
+    };
+    static const uint8_t BOLT_TRI[5][3] = {
+      {6, 0, 1}, {6, 1, 2}, {6, 2, 3}, {3, 4, 5}, {3, 5, 6}
+    };
+    int bx[7], by[7];
+    for (int i = 0; i < 7; i++) {
+      bx[i] = cx + (int)roundf(BOLT_PTS[i][0] * k);
+      by[i] = cloudCy + (int)roundf(BOLT_PTS[i][1] * k);
+    }
+    for (int t = 0; t < 5; t++) {
+      d.fillTriangle(bx[BOLT_TRI[t][0]], by[BOLT_TRI[t][0]],
+                     bx[BOLT_TRI[t][1]], by[BOLT_TRI[t][1]],
+                     bx[BOLT_TRI[t][2]], by[BOLT_TRI[t][2]], sunColor);
+    }
   }
 }
 
@@ -3512,14 +3543,23 @@ void drawForecastPageFull() {
 
   tft.drawFastHLine(8, dividerY, SCREEN_W - 16, COL_STROKE);
 
+  // Daily-column icon size and the hi/lo rows underneath it: bumped the
+  // icon up and pushed hi/lo further down into what used to be dead space
+  // below them (vlineH's bottom is the column's real available height -
+  // there was a ~40-46px unused gap under "lo" before this, worse in
+  // landscape where the column has less height to begin with so the same
+  // absolute gap read as a bigger fraction of it). The bitmap cloud only
+  // avoids upscale blur up to CLOUD_PUFF_FILL_W(64) native px - a
+  // dayIconScale up to ~1/CLOUD_PUFF_SIZE_RATIO (~1.44) stays within that,
+  // so both new values still render crisp.
   int colW = SCREEN_W / 5;
   int bodyTop = dividerY + (ls ? 6 : 10);
   int rf = fontStatusRow();
-  float dayIconScale = ls ? 0.8f : 1.0f;
+  float dayIconScale = ls ? 0.95f : 1.3f;
   int dayLabelDy = ls ? 6  : 10;
-  int dayIconDy  = ls ? 30 : 46;
-  int hiDy       = ls ? 52 : 82;
-  int loDy       = ls ? 70 : 106;
+  int dayIconDy  = ls ? 40 : 54;
+  int hiDy       = ls ? 74 : 100;
+  int loDy       = ls ? 94 : 128;
   int vlineH     = (SCREEN_H - FOOTER_H) - (bodyTop + dayLabelDy) - 4;
 
   tft.setTextDatum(MC_DATUM);

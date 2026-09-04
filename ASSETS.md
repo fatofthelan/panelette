@@ -48,12 +48,30 @@ python3 tools/svg2icon.py > src/WeatherIcons.h
 
 ### Why a bitmap and not more vector primitives
 
-The forecast page's sun/moon/rain/snow/thunderbolt accents are still drawn
-procedurally (circles, lines, a filled triangle) - those never had a shape
-problem. Only the cloud silhouette itself was replaced: three overlapping
-circles never quite reads as a real cloud, no matter how the AA on their
-seams is fixed. Tracing amCharts' actual cloud path gets the proportions
-right in a way that's impractical to hand-tune from primitives.
+The forecast page's sun/moon/rain/snow accents are still drawn
+procedurally (circles, lines) - those never had a shape problem. Only the
+cloud silhouette itself needed a bitmap: three overlapping circles never
+quite reads as a real cloud, no matter how the AA on their seams is fixed.
+Tracing amCharts' actual cloud path gets the proportions right in a way
+that's impractical to hand-tune from primitives.
+
+The thunderbolt is the one exception drawn from traced amCharts geometry
+without a bitmap: `thunder.svg`'s bolt is a 7-point polygon
+(`points="14.3,-2.9 20.5,-2.9 16.4,4.3 20.3,4.3 11.5,14.6 14.9,6.9
+11.1,6.9"`, in the same 64-unit canvas frame as the cloud path once its
+own `translate(-9,28), scale(1.2)` is composed with the shared outer
+group translate). TFT_eSPI has no general filled-polygon primitive, so
+this was ear-clipped once, offline, into 5 triangles (a one-off Python
+snippet, not part of `svg2icon.py`) and those triangle indices are baked
+directly into `drawWeatherIcon()`'s `BOLT_PTS`/`BOLT_TRI` arrays in
+native-canvas-unit coordinates, positioned at runtime the same way as the
+back cloud puff (offset from `(cx, cloudCy)` scaled by `k`). Replaced an
+earlier rough two-triangle zigzag that only approximated a bolt shape.
+
+Rain and snow keep their existing procedural circles/lines, just
+repositioned against the bitmap cloud's actual bottom edge (previously
+tuned against the old three-circle cloud's slightly different bottom) and
+given a small size bump alongside the September 2026 icon-size pass below.
 
 The "layered" look amCharts uses for the fully-overcast and thunderstorm
 conditions (`cloudy.svg` / `thunder.svg` - a smaller, lighter cloud puff

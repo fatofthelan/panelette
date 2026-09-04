@@ -215,9 +215,11 @@ The forecast page's cloud shape is a baked bitmap (`WeatherIcons.h`,
 `drawCloudPuff()` in main.ino), traced from amCharts' free SVG weather
 icon pack (Apache 2.0 - see `ASSETS.md`) via `tools/svg2icon.py`. It
 replaced an earlier hand-drawn three-overlapping-circles cloud that never
-quite read as a real cloud silhouette. The sun/moon/rain/snow/thunderbolt
-accents around it are still drawn procedurally (`drawWeatherIcon()`) -
-those never had a shape problem, only the cloud did.
+quite read as a real cloud silhouette. The sun/moon/rain/snow accents
+around it are still drawn procedurally (`drawWeatherIcon()`) - those never
+had a shape problem, only the cloud did. The thunderbolt is amCharts'
+exact polygon too, ear-clipped offline into triangles rather than baked as
+a bitmap - see `ASSETS.md`.
 
 - **`TFT_eSprite::drawPixel(x,y,color)` hides TFT_eSPI's alpha-blend
   overload.** `TFT_eSPI::drawPixel(x, y, color, alpha, bg_color =
@@ -233,12 +235,27 @@ those never had a shape problem, only the cloud did.
   `blendColor565()` + the plain 3-arg `d.drawPixel()`, all of which
   resolve correctly on both types via virtual dispatch.
 - `drawCloudPuff()` box-downsamples the bitmap's native 64x64 to whatever
-  `scale` a call site needs (always downscaling in practice - 64px covers
-  even the forecast hero icon) and never upscales blurrily.
-  `CLOUD_PUFF_SIZE_RATIO` converts an existing call site's old `scale`
-  value (tuned against the old three-circle cloud's footprint) to the
-  bitmap's slightly different native proportions, so no call site needed
-  retuning when the bitmap was swapped in.
+  `scale` a call site needs - downscaling only stays sharp; a call site's
+  `dayIconScale`/`heroIconScale` should stay at or below
+  `1/CLOUD_PUFF_SIZE_RATIO` (~1.44) to avoid the box-downsample's crude
+  nearest-ish upscale fallback going blocky (the portrait hero icon sits
+  right at the edge of this - `1.5*CLOUD_PUFF_SIZE_RATIO*64` ≈ 67px vs the
+  64px native asset, a ~4% upscale that's not visibly blocky at this size,
+  but don't push it much further without also increasing the bake
+  resolution in `svg2icon.py`). `CLOUD_PUFF_SIZE_RATIO` converts an
+  existing call site's old `scale` value (tuned against the old
+  three-circle cloud's footprint) to the bitmap's slightly different
+  native proportions, so no call site needed retuning when the bitmap was
+  swapped in.
+- The forecast page's 5-day daily-column icon size (`dayIconScale`) and
+  the hi/lo temperature rows under it (`hiDy`/`loDy` in
+  `drawForecastPageFull()`) both got bumped September 2026 - there used to
+  be ~40-46px of dead space below "lo" (worse in landscape, which has less
+  total column height so the same absolute gap read as a bigger fraction
+  of it). Any further resize needs to keep icon-bottom / hi-top /
+  hi-bottom / lo-top / lo-bottom clearances positive against `vlineH`'s
+  bottom - landscape's budget is tight (~110px vs portrait's ~156px), so
+  work the numbers rather than eyeballing a bump.
 - Overcast (WMO 3) and storms (95+) get amCharts' "layered" look - a
   second, smaller, lighter copy of the same puff drawn first (behind),
   offset by `CLOUD_BACK_DX`/`DY` native-canvas units and scaled by
