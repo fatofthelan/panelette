@@ -350,12 +350,19 @@ void applyLayout() {
   if (landscapeMode()) { SCREEN_W = 320; SCREEN_H = 240; GRID_COLS = 3; GRID_ROWS = 2; }
   else                 { SCREEN_W = 240; SCREEN_H = 320; GRID_COLS = 2; GRID_ROWS = 3; }
 
+  // vMargin is the gap above the first row and below the last row - kept
+  // equal to CELL_GAP (the gap between rows) so the grid reads as evenly
+  // spaced top-to-bottom. An earlier version used a top margin of 6 and a
+  // "- 2" fudge on CELL_H that didn't add up to a matching bottom margin -
+  // the last row ran a few px past the footer's top edge (worse in
+  // landscape, where less headroom made it visible as an actual overlap).
   int contentH = SCREEN_H - HEADER_H - FOOTER_H;
   int edge = landscapeMode() ? 6 : 8;
+  int vMargin = landscapeMode() ? 6 : 8;
   CELL_W = (SCREEN_W - 2 * edge - (GRID_COLS - 1) * CELL_GAP) / GRID_COLS;
-  CELL_H = (contentH - (GRID_ROWS - 1) * CELL_GAP - 2) / GRID_ROWS;
+  CELL_H = (contentH - 2 * vMargin - (GRID_ROWS - 1) * CELL_GAP) / GRID_ROWS;
   for (int c = 0; c < GRID_COLS; c++) COL_X[c] = edge + c * (CELL_W + CELL_GAP);
-  for (int r = 0; r < GRID_ROWS; r++) GRID_Y[r] = HEADER_H + 6 + r * (CELL_H + CELL_GAP);
+  for (int r = 0; r < GRID_ROWS; r++) GRID_Y[r] = HEADER_H + vMargin + r * (CELL_H + CELL_GAP);
 
   // Timer countdown view - landscape has ~86 px less height to fit it above the footer.
   if (landscapeMode()) {
