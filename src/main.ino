@@ -1891,17 +1891,33 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
   }
 
   // Cloud shape - base for partly-cloudy, overcast, rain, snow, storm.
-  // Filled first, then each bump's own outline drawn on top - the
-  // outline is what actually reads as "cloud" rather than a blob, since
-  // three same-color filled circles alone merge into one shapeless mass.
-  uiFillCircle(d, cx - S(6), cloudCy, S(7), cloudFill);
-  uiFillCircle(d, cx + S(5), cloudCy, S(8), cloudFill);
-  uiFillCircle(d, cx, cloudCy - S(4), S(7), cloudFill);
-  uiFillRR(d, cx - S(10), cloudCy, S(22), S(8), S(4), cloudFill, bg);
-  d.drawSmoothCircle(cx - S(6), cloudCy, S(7), cloudStroke, cloudFill);
-  d.drawSmoothCircle(cx + S(5), cloudCy, S(8), cloudStroke, cloudFill);
-  d.drawSmoothCircle(cx, cloudCy - S(4), S(7), cloudStroke, cloudFill);
-  d.drawFastHLine(cx - S(10), cloudCy + S(8), S(22), cloudStroke); // flat base edge
+  // Two-pass "silhouette then inset fill" build: every edge is drawn with
+  // uiFillCircle/uiFillRR's default UI_AA_READ sampling, which blends
+  // against whatever pixel is actually there (true background on the
+  // silhouette pass, the stroke colour on the fill pass) instead of a
+  // single guessed bg colour. The old version stroked each puff's outline
+  // with drawSmoothCircle(), which can't sample - it always blended
+  // toward a flat cloudFill guess, which was wrong wherever one puff's
+  // edge crossed a notch of true background between the puffs. That
+  // mismatch is what showed up as light "dot" fringing along the cloud's
+  // silhouette.
+  int rL = S(7), rR = S(8), rT = S(7);
+  int cStroke = max(1, S(1));
+
+  // Pass 1: full-size silhouette in the stroke colour.
+  uiFillCircle(d, cx - S(6), cloudCy, rL, cloudStroke);
+  uiFillCircle(d, cx + S(5), cloudCy, rR, cloudStroke);
+  uiFillCircle(d, cx, cloudCy - S(4), rT, cloudStroke);
+  uiFillRR(d, cx - S(10), cloudCy - cStroke, S(22), S(8) + cStroke, S(4), cloudStroke, UI_AA_READ);
+
+  // Pass 2: same shapes inset by cStroke, filled on top - leaves a clean
+  // ring of the silhouette colour as the cloud's outline.
+  uiFillCircle(d, cx - S(6), cloudCy, max(1, rL - cStroke), cloudFill);
+  uiFillCircle(d, cx + S(5), cloudCy, max(1, rR - cStroke), cloudFill);
+  uiFillCircle(d, cx, cloudCy - S(4), max(1, rT - cStroke), cloudFill);
+  uiFillRR(d, cx - S(10) + cStroke, cloudCy, max(1, S(22) - 2 * cStroke), max(1, S(8) - cStroke),
+           max(0, S(4) - cStroke), cloudFill, UI_AA_READ);
+  d.drawFastHLine(cx - S(10), cloudCy + S(8), S(22), cloudStroke); // flat base edge - solid, no AA guess involved
 
   if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
     // Rain
