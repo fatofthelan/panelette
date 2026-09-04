@@ -12,7 +12,7 @@
 // type the compiler hasn't seen yet. Including this header up top
 // guarantees the types exist before that auto-prototype block does.
 #define MAX_PAGES 8
-#define MAX_TILES 6 // grid only has 6 cells (2x3)
+#define MAX_TILES 6 // grid only has 6 cells (2x3 portrait, 3x2 landscape)
 
 struct TileConfig {
   char type[12];      // "light" | "switch" | "sensor" | "blank"
@@ -32,6 +32,15 @@ struct PageConfig {
   TileConfig tiles[MAX_TILES];
 };
 
+// One touch-calibration slot - see DeviceConfig.touchCal below for why
+// there are 4 of these (one per TFT_eSPI rotation value) rather than one.
+struct TouchCal {
+  bool    calibrated;   // false = readTouchXY() uses the compiled TOUCH_* defaults for this rotation
+  bool    swapXY;       // true = raw p.y drives screen X (panel axes transposed)
+  int16_t xMin, xMax;   // raw range mapped to screen X 0..W-1 (min may exceed max = inverted)
+  int16_t yMin, yMax;
+};
+
 struct DeviceConfig {
   char deviceName[24];
   char haUrl[80];
@@ -39,7 +48,8 @@ struct DeviceConfig {
   bool haLiveUpdates;  // experimental: hold a HA WebSocket for push state updates instead of polling
   bool darkTheme;
   bool use12Hour;
-  bool flipScreen;   // true = rotate the display 180 deg (USB port on the other side)
+  uint8_t rotation;  // TFT_eSPI rotation, 0-3 = 0/90/180/270 deg. 2 = shipped default
+                      // (portrait, USB at bottom); 1/3 = landscape (3x2 grid).
   char timezone[24];
   uint8_t uiFontSize;  // 0 = Small, 1 = Medium (default), 2 = Large
   char uiTypeface[16]; // theme axis: "sans" (Noto Sans) | "mono" (Plex Mono, UPPERCASE + rules)
@@ -82,10 +92,17 @@ struct DeviceConfig {
   uint8_t  powerSaveDimPct;       // backlight level while asleep (0 = fully off)
 
   // --- Touch calibration (on-device wizard; see the touch-cal module) ---
-  bool    touchCalibrated;        // false = readTouchXY() uses the compiled TOUCH_* defaults
-  bool    touchSwapXY;            // true = raw p.y drives screen X (panel axes transposed)
-  int16_t touchXMin, touchXMax;   // raw range mapped to screen X 0..W-1 (min may exceed max = inverted)
-  int16_t touchYMin, touchYMax;
+  // One slot per TFT_eSPI rotation value (0-3), indexed by cfg.rotation
+  // directly - NOT one slot per portrait/landscape orientation class.
+  // XPT2046_Touchscreen's own setRotation() applies a different raw-
+  // coordinate transform for all four rotation values (confirmed from its
+  // source: each case swaps/inverts x and y differently, including
+  // between a rotation and its own 180-flip), so a calibration captured
+  // at one rotation is not valid at any other - each of the 4 genuinely
+  // needs its own. Lets a panel that's already been calibrated at a given
+  // rotation stay calibrated when the user switches back to it, instead
+  // of re-running the wizard every time.
+  TouchCal touchCal[4];
 
   uint8_t pageCount;
   PageConfig pages[MAX_PAGES];
@@ -143,4 +160,16 @@ enum WifiCredSource {
   WCS_NONE,    // no credentials anywhere - on-device setup takes over
   WCS_COMPILE, // baked in via include/secrets.h (source builds)
   WCS_STORED   // saved in NVS by the setup flow
+};
+
+// Status page layout - see statusLayout() in main.ino. Struct lives here
+// (not the .ino) for the same auto-prototype reason as the config structs
+// above: statusLayout() returns one, so the type must exist before the
+// auto-generated prototype block does.
+struct StatusLayout {
+  int rowKeyX, rowValX, rowValW, rowH, row0Y;
+  int darkX, darkY, darkW, darkH;
+  int rotX,  rotY,  rotW,  rotH;
+  int rebootX, rebootY, rebootW, rebootH;
+  int verY;
 };

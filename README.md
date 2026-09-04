@@ -87,4 +87,5 @@ technical reference.
 ## License
 
 Code: **MIT** — see [LICENSE](LICENSE).
-Bundled font subsets: **SIL OFL 1.1** — see [FONTS.md](FONTS.md).
+Bundled font subsets: **SIL OFL 1.1** — see [FONTS.md](FONTS.md). Forecast
+page cloud icon: **Apache 2.0** (amCharts) — see [ASSETS.md](ASSETS.md).

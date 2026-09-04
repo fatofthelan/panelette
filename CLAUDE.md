@@ -27,6 +27,11 @@ build-config changes.
   the anti-aliased `.vlw` fonts as `PROGMEM` byte arrays. See "Fonts".
 - `tools/ttf2vlw.py` - the TTF -> `.vlw` converter that generated those
   (freetype-py, no Processing IDE needed). See "Fonts".
+- `src/WeatherIcons.h` - the forecast page's cloud-puff bitmap (two 8-bit
+  coverage layers, PROGMEM), traced from amCharts' free SVG weather icon
+  pack. See "Forecast page icons" and `ASSETS.md`.
+- `tools/svg2icon.py` - the SVG-path -> coverage-bitmap rasterizer that
+  generated it (stdlib only - no cairosvg/Pillow). See "Forecast page icons".
 - `include/secrets.h` - OPTIONAL `WIFI_SSID` / `WIFI_PASSWORD` `#define`s.
   Gitignored. `#if __has_include` in main.ino - the firmware builds and
   runs without it (on-device Wi-Fi setup takes over). Copy from
@@ -68,14 +73,37 @@ build-config changes.
 
 ## Screen orientation
 
-Portrait always. `cfg.flipScreen` toggles `tft.setRotation()` between 2
-(default) and 0 (180 flip, for USB-port-on-the-other-side mounting) via
-`applyScreenRotation()`. **Touch is left on its rotation-2 calibration** -
-`readTouchXY()` point-reflects the mapped x/y (`SCREEN_W-1-x`, `SCREEN_H-1-y`)
-when flipped, rather than re-calibrating. Toggle is on the Status page and
-in the web Device card. If a flip shows a small pixel offset/black band,
-that's a CGRAM-offset quirk on some CYD ST7789 units - add `TFT_ROW_OFFSET`
-/ `TFT_COL_OFFSET` build flags.
+Full 4-way rotation, not just portrait. `cfg.rotation` (`uint8_t`, 0-3) *is*
+the `TFT_eSPI` rotation value (0/90/180/270°) directly - no separate
+`flipScreen`/`orientation` fields. 2 is the shipped default (portrait, USB
+at bottom); 0 is portrait flipped; 1/3 are landscape (for the alternate
+mount). Toggle is the Status page's rotate button (cycles 0->1->2->3->0)
+and a 4-way `<select>` in the web Device card.
+
+- **`SCREEN_W`/`SCREEN_H` and the tile grid are runtime, not `const`.**
+  `applyLayout()` (called by `applyScreenRotation()`) recomputes them from
+  `landscapeMode()` (`cfg.rotation == 1 || 3`): 240x320 / 2x3 grid in
+  portrait, 320x240 / 3x2 in landscape. Every other page's geometry that
+  used to be `const int X = f(SCREEN_W/H)` - Status, Forecast, the Timers
+  countdown view, the brightness overlay, the timer-expiry dialog, the
+  Wi-Fi provisioning screen - had to become a plain global recomputed
+  inside `applyLayout()` too: C++ legally lets `const int x =
+  nonConstGlobal` compile as a *runtime*-initialized constant, so those all
+  silently froze at their startup (portrait) values and never updated on
+  a rotation change, even though nothing failed to compile. If a page
+  looks "frozen at portrait dimensions" in landscape, this is almost
+  certainly why - check whether its geometry is computed in
+  `applyLayout()` or still a stray `const`.
+- **Touch tracks rotation exactly, not just portrait/landscape.**
+  `applyScreenRotation()` calls `ts.setRotation(cfg.rotation)` right after
+  `tft.setRotation()`, so raw touch coordinates come in already aligned to
+  the current display orientation - no point-reflection hack needed (an
+  earlier one, for the old flip-only design, is gone). See "Touch handling
+  notes" below for why calibration itself still needs a separate slot per
+  exact rotation value, not just per portrait/landscape.
+- If a flip shows a small pixel offset/black band, that's a CGRAM-offset
+  quirk on some CYD ST7789 units - add `TFT_ROW_OFFSET` / `TFT_COL_OFFSET`
+  build flags.
 
 ## Display hardware config - the CYD is not one board
 
@@ -204,6 +232,63 @@ smooth-fonts** - the old numbered bitmap fonts (1/2/4) and the GFXFF
   `LOAD_GFXFF` is set (still in `build_flags`), and re-including caused
   "redefinition" errors (no include guards).
 
+## Forecast page icons (bitmap cloud + procedural accents)
+
+The forecast page's cloud shape is a baked bitmap (`WeatherIcons.h`,
+`drawCloudPuff()` in main.ino), traced from amCharts' free SVG weather
+icon pack (Apache 2.0 - see `ASSETS.md`) via `tools/svg2icon.py`. It
+replaced an earlier hand-drawn three-overlapping-circles cloud that never
+quite read as a real cloud silhouette. The sun/moon/rain/snow accents
+around it are still drawn procedurally (`drawWeatherIcon()`) - those never
+had a shape problem, only the cloud did. The thunderbolt is amCharts'
+exact polygon too, ear-clipped offline into triangles rather than baked as
+a bitmap - see `ASSETS.md`.
+
+- **`TFT_eSprite::drawPixel(x,y,color)` hides TFT_eSPI's alpha-blend
+  overload.** `TFT_eSPI::drawPixel(x, y, color, alpha, bg_color =
+  UI_AA_READ)` exists and is exactly the "blend toward the real pixel
+  underneath" primitive `drawCloudPuff()` wants - but `TFT_eSprite`
+  (inherits from `TFT_eSPI`) only re-declares the plain 3-arg
+  `drawPixel(x,y,color)`, and in C++ a derived class re-declaring a name
+  hides *every* base-class overload of that name, not just the one with a
+  matching signature. Since `drawCloudPuff()` is templated over `T` to
+  work on both `tft` and a sprite, the 4-arg call compiles fine for
+  `T=TFT_eSPI` but fails to resolve for `T=TFT_eSprite`. Fix: don't call
+  the alpha-blend overload at all - do it by hand with `d.readPixel()` +
+  `blendColor565()` + the plain 3-arg `d.drawPixel()`, all of which
+  resolve correctly on both types via virtual dispatch.
+- `drawCloudPuff()` box-downsamples the bitmap's native 64x64 to whatever
+  `scale` a call site needs - downscaling only stays sharp; a call site's
+  `dayIconScale`/`heroIconScale` should stay at or below
+  `1/CLOUD_PUFF_SIZE_RATIO` (~1.44) to avoid the box-downsample's crude
+  nearest-ish upscale fallback going blocky (the portrait hero icon sits
+  right at the edge of this - `1.5*CLOUD_PUFF_SIZE_RATIO*64` ≈ 67px vs the
+  64px native asset, a ~4% upscale that's not visibly blocky at this size,
+  but don't push it much further without also increasing the bake
+  resolution in `svg2icon.py`). `CLOUD_PUFF_SIZE_RATIO` converts an
+  existing call site's old `scale` value (tuned against the old
+  three-circle cloud's footprint) to the bitmap's slightly different
+  native proportions, so no call site needed retuning when the bitmap was
+  swapped in.
+- The forecast page's 5-day daily-column icon size (`dayIconScale`) and
+  the hi/lo temperature rows under it (`hiDy`/`loDy` in
+  `drawForecastPageFull()`) both got bumped September 2026 - there used to
+  be ~40-46px of dead space below "lo" (worse in landscape, which has less
+  total column height so the same absolute gap read as a bigger fraction
+  of it). Any further resize needs to keep icon-bottom / hi-top /
+  hi-bottom / lo-top / lo-bottom clearances positive against `vlineH`'s
+  bottom - landscape's budget is tight (~110px vs portrait's ~156px), so
+  work the numbers rather than eyeballing a bump.
+- Overcast (WMO 3) and storms (95+) get amCharts' "layered" look - a
+  second, smaller, lighter copy of the same puff drawn first (behind),
+  offset by `CLOUD_BACK_DX`/`DY` native-canvas units and scaled by
+  `CLOUD_BACK_SCALE`, both derived from amCharts' own transform on the back
+  copy in `cloudy.svg`/`thunder.svg` - see `ASSETS.md`. Partly-cloudy (1-2)
+  and rain/snow keep a single puff, matching amCharts' own source (no back
+  puff in `cloudy-day/night-*.svg` or `rainy-*.svg`).
+- To regenerate after editing `tools/svg2icon.py`:
+  `python3 tools/svg2icon.py > src/WeatherIcons.h`.
+
 ## Theme system (three orthogonal axes + dark/light)
 
 Set in the web UI's Device card, applied by `applyTheme()` /
@@ -243,16 +328,45 @@ they render jagged.
 
 ## Touch handling notes
 
-- **Calibration is per-panel.** `cfg.touch{Calibrated,SwapXY,XMin,XMax,YMin,
-  YMax}` hold the raw->screen map; the compiled `TOUCH_*_MIN/MAX` constants are
-  only the defaults for an un-calibrated board. `readTouchXY()` uses the cfg
-  values (`map()` copes with a reversed range = inverted axis). The on-device
-  3-point wizard (`touchCalLoop()`, module above `setup()`) writes them:
-  averages the raw reading at 3 targets (TL/TR/BL), derives swap + per-axis
-  span, saves. Triggers: first boot (nothing saved), a finger held ~2.5 s at
-  boot, or `POST /calibrate-touch` (web UI Panel -> Touchscreen). 90 s timeout
-  keeps the old values. Runs at `setRotation(2)`; the `flipScreen` 180
-  point-reflection in `readTouchXY()` is unchanged and layers on top.
+- **Calibration is per-panel AND per rotation, but one tap-through per
+  orientation is enough.** `cfg.touchCal[4]` (`TouchCal` struct:
+  `calibrated`/`swapXY`/`xMin`/`xMax`/`yMin`/`yMax`, config_types.h) holds
+  one slot per `cfg.rotation` value (0-3), indexed directly by it -
+  `readTouchXY()` and the wizard both use `cfg.touchCal[cfg.rotation]`.
+  This is deliberately **not** a portrait/landscape split - confirmed
+  straight from `XPT2046_Touchscreen.cpp`'s `setRotation()` source, which
+  applies a genuinely different raw x/y swap-and-invert for all four
+  rotation values, including between a rotation and its own 180-flip (0
+  and 2 are not interchangeable, nor are 1 and 3), so naively sharing one
+  slot per orientation class would silently misalign touch.
+  However: for a rotation and its own 180-flip specifically, the two raw
+  transforms turn out to be exact 4095-complements of each other for every
+  physical touch point (checked against 200 randomized simulated hardware
+  configs, both "axes swapped" states, before trusting it) - so
+  `derive180Partner()` computes the 180-flip partner's whole calibration
+  from a fresh one with no extra taps (`calibrated`/`swapXY` unchanged,
+  each raw min/max value replaced by `TOUCH_RAW_MAX - value`), called from
+  both `touchCalFinish()` (`cfg.rotation ^ 2` is always the partner slot)
+  and the old-format migration path below. Net effect: calibrate once in
+  portrait and once in landscape (2 tap-throughs total), not once per
+  exact rotation (4).
+  The compiled `TOUCH_*_MIN/MAX` constants are only the defaults for a
+  slot that's never been calibrated (nor had a partner calibrated). `map()`
+  copes with a reversed range = inverted axis. The on-device 3-point
+  wizard (`touchCalLoop()`, module above `setup()`) writes the *active*
+  rotation's slot (and its derived partner): averages the raw reading at 3
+  targets (TL/TR/BL), derives swap + per-axis span, saves. Triggers: first
+  boot or a rotation change *if that rotation's slot has never been
+  calibrated* (switching to an already-calibrated rotation, or one whose
+  180-flip partner has been, reuses it instead of re-prompting), a finger
+  held ~2.5 s at boot, or `POST /calibrate-touch` (web UI Panel ->
+  Touchscreen, always runs unconditionally regardless of slot state). 90 s
+  timeout keeps the old values for that slot.
+  An old config's single (pre-multi-rotation) calibration migrates into
+  the slot for whatever rotation was active when it was saved
+  (`cfg.rotation` is already resolved by the time `loadConfig()` reaches
+  the touch-cal fields), not blindly into slot 0 - and derives that
+  rotation's 180-flip partner too.
 - Resistive touch (XPT2046) has real contact bounce at press/release
   transitions, and the Z (pressure) reading dips mid-drag. Several guards
   exist because of this:
