@@ -81,6 +81,12 @@ struct DeviceConfig {
   uint16_t powerSaveSec;          // inactivity timeout before dimming
   uint8_t  powerSaveDimPct;       // backlight level while asleep (0 = fully off)
 
+  // --- Touch calibration (on-device wizard; see the touch-cal module) ---
+  bool    touchCalibrated;        // false = readTouchXY() uses the compiled TOUCH_* defaults
+  bool    touchSwapXY;            // true = raw p.y drives screen X (panel axes transposed)
+  int16_t touchXMin, touchXMax;   // raw range mapped to screen X 0..W-1 (min may exceed max = inverted)
+  int16_t touchYMin, touchYMax;
+
   uint8_t pageCount;
   PageConfig pages[MAX_PAGES];
 };

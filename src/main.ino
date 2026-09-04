@@ -965,6 +965,11 @@ void setDefaultConfig() {
   cfg.powerSaveSec = 60;
   cfg.powerSaveDimPct = 0;
 
+  cfg.touchCalibrated = false;
+  cfg.touchSwapXY = false;
+  cfg.touchXMin = TOUCH_X_MIN; cfg.touchXMax = TOUCH_X_MAX;
+  cfg.touchYMin = TOUCH_Y_MIN; cfg.touchYMax = TOUCH_Y_MAX;
+
   cfg.pageCount = 4;
 
   const char* defIds[4]   = {"home", "forecast", "timers", "status"};
@@ -1123,6 +1128,12 @@ bool loadConfig() {
   cfg.powerSave            = doc["powerSave"] | false;
   cfg.powerSaveSec         = (uint16_t)constrain((int)(doc["powerSaveSec"] | 60), 5, 3600);
   cfg.powerSaveDimPct      = (uint8_t)constrain((int)(doc["powerSaveDimPct"] | 0), 0, 100);
+  cfg.touchCalibrated      = doc["touchCalibrated"] | false;
+  cfg.touchSwapXY          = doc["touchSwapXY"] | false;
+  cfg.touchXMin = doc["touchXMin"] | TOUCH_X_MIN;
+  cfg.touchXMax = doc["touchXMax"] | TOUCH_X_MAX;
+  cfg.touchYMin = doc["touchYMin"] | TOUCH_Y_MIN;
+  cfg.touchYMax = doc["touchYMax"] | TOUCH_Y_MAX;
 
   JsonArray pagesArr = doc["pages"].as<JsonArray>();
   cfg.pageCount = 0;
@@ -1204,6 +1215,12 @@ void buildConfigJson(JsonDocument& doc) {
   doc["powerSave"] = cfg.powerSave;
   doc["powerSaveSec"] = cfg.powerSaveSec;
   doc["powerSaveDimPct"] = cfg.powerSaveDimPct;
+  doc["touchCalibrated"] = cfg.touchCalibrated;
+  doc["touchSwapXY"] = cfg.touchSwapXY;
+  doc["touchXMin"] = cfg.touchXMin;
+  doc["touchXMax"] = cfg.touchXMax;
+  doc["touchYMin"] = cfg.touchYMin;
+  doc["touchYMax"] = cfg.touchYMax;
 
   JsonArray pagesArr = doc.createNestedArray("pages");
   for (int i = 0; i < cfg.pageCount; i++) {
@@ -1904,11 +1921,16 @@ bool readTouchXY(int& x, int& y) {
   gLastInteractionMs = millis(); // any contact keeps the screen awake (power-save)
   TS_Point p = ts.getPoint();
 
-  long rawX = constrain((long)p.x, (long)TOUCH_X_MIN, (long)TOUCH_X_MAX);
-  long rawY = constrain((long)p.y, (long)TOUCH_Y_MIN, (long)TOUCH_Y_MAX);
+  // cfg.touch* default to the compiled TOUCH_* constants; the on-device
+  // calibration wizard overwrites them (and can set touchSwapXY). map()
+  // handles a reversed (min > max) range, so an inverted axis just works.
+  long rawX = cfg.touchSwapXY ? p.y : p.x;
+  long rawY = cfg.touchSwapXY ? p.x : p.y;
+  rawX = constrain(rawX, (long)min(cfg.touchXMin, cfg.touchXMax), (long)max(cfg.touchXMin, cfg.touchXMax));
+  rawY = constrain(rawY, (long)min(cfg.touchYMin, cfg.touchYMax), (long)max(cfg.touchYMin, cfg.touchYMax));
 
-  x = (int)map(rawX, TOUCH_X_MIN, TOUCH_X_MAX, 0, SCREEN_W);
-  y = (int)map(rawY, TOUCH_Y_MIN, TOUCH_Y_MAX, 0, SCREEN_H);
+  x = (int)map(rawX, cfg.touchXMin, cfg.touchXMax, 0, SCREEN_W - 1);
+  y = (int)map(rawY, cfg.touchYMin, cfg.touchYMax, 0, SCREEN_H - 1);
   x = constrain(x, 0, SCREEN_W - 1);
   y = constrain(y, 0, SCREEN_H - 1);
 
@@ -3940,6 +3962,16 @@ void handleContinuousTouch() {
 // =========================================================
 WebServer server(80);
 
+// Touch-calibration wizard state (module + functions live just above setup();
+// declared here so handleCalibrateTouch() below can flip it on).
+bool gTouchCalActive = false;
+bool gTouchCalFirstRun = false;
+bool gTouchCalReady = false;          // false = loop() still needs to enter/draw
+int  gTouchCalStep = 0;
+long gTouchCalRaw[3][2];
+unsigned long gTouchCalEnterMs = 0;
+const int TCAL_M = 24;                // target inset from the screen edges
+
 // One-shot banner shown at the top of the settings page after a redirect
 // (e.g. the result of the HA connection probe / config import on Save).
 String gSaveNotice = "";
@@ -4242,6 +4274,14 @@ void handlePanelPage() {
   h += "</select>";
   h += "<button class='primary' type='submit'>Save device</button>";
   h += "</section></form>";
+
+  h += "<section class='card'><h2>Touchscreen</h2>";
+  h += "<div class='muted' style='margin-bottom:8px'>Calibration is per-panel. Run this if taps land off-target"
+       + String(cfg.touchCalibrated ? "" : " &mdash; this panel is still on the built-in defaults") + ".</div>";
+  h += "<form method='POST' action='/calibrate-touch'>";
+  h += "<button type='submit'>Calibrate on the panel</button></form>";
+  h += "<div class='muted' style='margin-top:6px'>The panel shows 3 targets to tap. Takes ~15 seconds.</div>";
+  h += "</section>";
 
   h += "<form method='POST' action='/save-device' class='dirty-guard'>";
   h += "<input type='hidden' name='_return' value='/panel'>";
@@ -4939,6 +4979,14 @@ void handleReboot() {
   sendRebootPage("Rebooting", "");
 }
 
+void handleCalibrateTouch() {
+  gTouchCalActive = true;
+  gTouchCalFirstRun = false;
+  gTouchCalReady = false;
+  gSaveNotice = "Touch calibration is running on the panel - tap the 3 targets.";
+  redirectAfterSave("/panel");
+}
+
 void handleWifiForget() {
   wifiCredsClearNvs();
   Serial.println("[wifi] credentials cleared - restarting into setup mode");
@@ -5586,6 +5634,7 @@ void setupWebServer() {
   server.on("/save-network", HTTP_POST, handleSaveNetwork);
   server.on("/wifi/forget", HTTP_POST, handleWifiForget);
   server.on("/reboot", HTTP_POST, handleReboot);
+  server.on("/calibrate-touch", HTTP_POST, handleCalibrateTouch);
   server.on("/save-flash", HTTP_POST, handleSaveFlash);
   server.on("/save-timers", HTTP_POST, handleSaveTimers);
   server.on("/reset-timers", HTTP_POST, handleResetTimers);
@@ -5729,6 +5778,144 @@ void handleLdr() {
 }
 
 // =========================================================
+// TOUCH CALIBRATION (on-device 3-point wizard)
+// =========================================================
+// Full-screen takeover: tap the centre of 3 targets (TL, TR, BL). From the
+// raw XPT2046 readings + the known target positions it derives the raw->screen
+// map (incl. X/Y swap and per-axis inversion) and writes it to cfg.touch*.
+// Runs from loop() while gTouchCalActive; triggered on first boot (no saved
+// calibration), by a held finger at boot, or from the web UI.
+
+void touchCalTarget(int idx, int& sx, int& sy) {
+  switch (idx) {
+    case 0:  sx = TCAL_M;              sy = TCAL_M;              break; // top-left
+    case 1:  sx = SCREEN_W - 1 - TCAL_M; sy = TCAL_M;            break; // top-right
+    default: sx = TCAL_M;              sy = SCREEN_H - 1 - TCAL_M; break; // bottom-left
+  }
+}
+
+void drawTouchCalScreen() {
+  tft.fillScreen(fixColor565(TFT_BLACK));
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(COL_TEXT, COL_BG);
+  uiDrawString(tft, "TOUCH SETUP", SCREEN_W / 2, 46, 2);
+  tft.setTextColor(COL_DIM, COL_BG);
+  uiDrawString(tft, "Tap the centre of", SCREEN_W / 2, SCREEN_H / 2 - 10, 1);
+  uiDrawString(tft, "the circle  (" + String(gTouchCalStep + 1) + " / 3)", SCREEN_W / 2, SCREEN_H / 2 + 12, 1);
+  tft.setTextDatum(TL_DATUM);
+
+  int sx, sy; touchCalTarget(gTouchCalStep, sx, sy);
+  uint16_t c = fixColor565(TFT_WHITE);
+  tft.drawSmoothCircle(sx, sy, 13, c, COL_BG);
+  tft.fillSmoothCircle(sx, sy, 2, c, COL_BG);
+  tft.drawWideLine(sx - 18, sy, sx - 7, sy, 2.0f, c, COL_BG);
+  tft.drawWideLine(sx + 7, sy, sx + 18, sy, 2.0f, c, COL_BG);
+  tft.drawWideLine(sx, sy - 18, sx, sy - 7, 2.0f, c, COL_BG);
+  tft.drawWideLine(sx, sy + 7, sx, sy + 18, 2.0f, c, COL_BG);
+}
+
+void touchCalMessage(const char* line1, const char* line2, uint16_t col, int ms) {
+  tft.fillScreen(fixColor565(TFT_BLACK));
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(col, COL_BG);
+  uiDrawString(tft, line1, SCREEN_W / 2, SCREEN_H / 2 - 8, 2);
+  if (line2 && line2[0]) {
+    tft.setTextColor(COL_DIM, COL_BG);
+    uiDrawString(tft, line2, SCREEN_W / 2, SCREEN_H / 2 + 16, 1);
+  }
+  tft.setTextDatum(TL_DATUM);
+  delay(ms);
+}
+
+void touchCalFinish() {
+  gTouchCalActive = false;
+  gTouchCalReady = false;
+  applyScreenRotation();   // back to the user's flip setting
+  pageDirty = true;
+}
+
+void touchCalLoop() {
+  gLastInteractionMs = millis(); // hold the backlight up during setup
+
+  if (!gTouchCalReady) {
+    tft.setRotation(2);           // calibrate in the canonical orientation
+    gTouchCalStep = 0;
+    gTouchCalEnterMs = millis();
+    gTouchCalReady = true;
+    if (gTouchCalFirstRun)
+      touchCalMessage("Welcome", "let's set up the touchscreen", COL_TEXT, 1400);
+    drawTouchCalScreen();
+    return;
+  }
+
+  if (millis() - gTouchCalEnterMs > 90000) {           // safety: bail, keep old cal
+    touchCalMessage("Setup timed out", "kept the current settings", COL_DIM, 1600);
+    touchCalFinish();
+    return;
+  }
+
+  static bool waitRelease = false;
+  if (waitRelease) { if (!ts.touched()) waitRelease = false; return; }
+  if (!ts.touched()) return;
+
+  // Average the raw readings while contact is held (~150 ms).
+  long sx = 0, sy = 0; int n = 0;
+  unsigned long t0 = millis();
+  while (ts.touched() && millis() - t0 < 220 && n < 48) {
+    TS_Point p = ts.getPoint();
+    sx += p.x; sy += p.y; n++;
+    delay(4);
+  }
+  if (n < 6) return;                                   // too brief - ignore
+  gTouchCalRaw[gTouchCalStep][0] = sx / n;
+  gTouchCalRaw[gTouchCalStep][1] = sy / n;
+
+  int tx, ty; touchCalTarget(gTouchCalStep, tx, ty);
+  tft.fillSmoothCircle(tx, ty, 6, fixColor565(0x2E91), COL_BG); // green ack
+  delay(160);
+
+  waitRelease = true;
+  gTouchCalStep++;
+  if (gTouchCalStep < 3) { drawTouchCalScreen(); return; }
+
+  // ---- solve ----
+  long r0x = gTouchCalRaw[0][0], r0y = gTouchCalRaw[0][1];
+  long r1x = gTouchCalRaw[1][0];
+  bool swap = (abs(gTouchCalRaw[1][1] - r0y) > abs(r1x - r0x)); // TL->TR moved raw-Y more?
+  auto rx = [&](int i) -> long { return swap ? gTouchCalRaw[i][1] : gTouchCalRaw[i][0]; };
+  auto ry = [&](int i) -> long { return swap ? gTouchCalRaw[i][0] : gTouchCalRaw[i][1]; };
+
+  int spanX = SCREEN_W - 1 - 2 * TCAL_M; // screen px between TL and TR
+  int spanY = SCREEN_H - 1 - 2 * TCAL_M; // ...between TL and BL
+  double perPxX = (double)(rx(1) - rx(0)) / spanX;
+  double perPxY = (double)(ry(2) - ry(0)) / spanY;
+
+  int xMin = (int)lround(rx(0) - perPxX * TCAL_M);
+  int xMax = (int)lround(rx(1) + perPxX * TCAL_M);
+  int yMin = (int)lround(ry(0) - perPxY * TCAL_M);
+  int yMax = (int)lround(ry(2) + perPxY * TCAL_M);
+
+  if (abs(xMax - xMin) < 300 || abs(yMax - yMin) < 300) {
+    touchCalMessage("Setup failed", "kept the current settings", fixColor565(0xF36D), 1800);
+    touchCalFinish();
+    return;
+  }
+
+  cfg.touchSwapXY = swap;
+  cfg.touchXMin = (int16_t)constrain(xMin, 0, 4095);
+  cfg.touchXMax = (int16_t)constrain(xMax, 0, 4095);
+  cfg.touchYMin = (int16_t)constrain(yMin, 0, 4095);
+  cfg.touchYMax = (int16_t)constrain(yMax, 0, 4095);
+  cfg.touchCalibrated = true;
+  saveConfig();
+  Serial.printf("[touch] calibrated: swap=%d X[%d..%d] Y[%d..%d]\n",
+                swap, cfg.touchXMin, cfg.touchXMax, cfg.touchYMin, cfg.touchYMax);
+
+  touchCalMessage("Touch setup saved", "", fixColor565(0x2E91), 1300);
+  touchCalFinish();
+}
+
+// =========================================================
 // SETUP / LOOP
 // =========================================================
 void setup() {
@@ -5788,6 +5975,17 @@ void setup() {
   applyCornerStyle();
   applyTheme(cfg.darkTheme);
   applyTimezone();
+
+  // Touch calibration: run the wizard on first boot (nothing saved), or if a
+  // finger is held on the screen for ~2.5 s at boot (escape hatch for a
+  // mis-calibrated panel). loop() drives it once it starts.
+  bool touchHeld = ts.touched();
+  for (int i = 0; touchHeld && i < 25; i++) { delay(100); touchHeld = ts.touched(); }
+  if (!gProvisioning && (!cfg.touchCalibrated || touchHeld)) {
+    gTouchCalActive = true;
+    gTouchCalFirstRun = !cfg.touchCalibrated;
+    gTouchCalReady = false;
+  }
 
   WiFi.mode(WIFI_STA);
   applyNetworkConfig(); // static IP, if configured - must precede WiFi.begin()
@@ -5905,6 +6103,7 @@ void loop() {
   backlightLoop(); // auto-dim / power-save - runs in every mode
 
   if (gProvisioning) { handleProvisioning(); return; }
+  if (gTouchCalActive) { touchCalLoop(); return; }
 
   server.handleClient();
   updateTimerState();
