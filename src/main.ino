@@ -3020,27 +3020,37 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   if (strcmp(tl.type, "powersave") == 0) { drawLocalTileSprite(tileIdx, x, y, w, h, force, true);  return; }
   if (strcmp(tl.type, "backlight") == 0) { drawLocalTileSprite(tileIdx, x, y, w, h, force, false); return; }
 
+  // Scene/script/button ("action") tiles are stateless, but they still
+  // share the light/switch/sensor tile's layout - top-left label,
+  // bottom-left value text, bottom-right corner icon - rather than the
+  // old centred label/big-icon/centred-status arrangement that used to
+  // make them look like a different widget from the rest of the grid.
   bool isAction = (strcmp(tl.type, "scene") == 0 || strcmp(tl.type, "script") == 0 ||
                    strcmp(tl.type, "button") == 0);
   if (isAction) {
     bool flashing = (actionFlashPage == currentPageIndex && actionFlashTile == tileIdx);
-    String combined = String("ACT|") + tl.label + "|" + (flashing ? "1" : "0") + "|" + String(COL_PANEL);
+    String stateText = flashing ? "Sent" : (strlen(tl.entityId) == 0 ? "Unset" : "Tap");
+    String combined = String("ACT|") + tl.label + "|" + stateText + "|" + String(COL_PANEL);
     if (!force && combined == rt.cacheKey) return;
     rt.cacheKey = combined;
 
-    uint16_t bg = flashing ? COL_PANEL_LIT : COL_PANEL;
+    uint16_t bgColor = flashing ? COL_PANEL_LIT : COL_PANEL;
     makeSpriteCard(sprTile, w, h, flashing ? (int)COL_PANEL_LIT : -1);
+    if (flashing) uiStrokeRR(sprTile, 0, 0, w, h, gCardRadius, COL_ACCENT, bgColor); // accent rim, same as a lit light tile
 
-    sprTile.setTextDatum(TC_DATUM);
-    sprTile.setTextColor(COL_DIM, bg);
-    uiDrawFitted(sprTile, tl.label, w / 2, 4, w - 12, fontTile());
+    const int pad = 12;
+    drawTileLabel(sprTile, tl.label, pad, w, w - pad - 6, bgColor);
 
-    drawActionIcon(sprTile, wide ? w / 4 : w / 2, 38, flashing ? COL_ACCENT : COL_DIM);
-
-    sprTile.setTextDatum(MC_DATUM);
-    sprTile.setTextColor(flashing ? COL_TEXT : COL_DIM, bg);
-    uiDrawString(sprTile, flashing ? "Sent" : (strlen(tl.entityId) == 0 ? "Unset" : "Tap"), w / 2, h - 12, fontTile());
+    // --- Value: bottom-left, the tile's focal point (matches other types) ---
+    int vAvail = w - pad - 26;
+    int vFont = (cfg.uiFontSize != 0 && uiTextWidth(sprTile, stateText, 4) <= vAvail) ? 4 : 2;
+    sprTile.setTextColor(flashing ? COL_ACCENT : COL_DIM, bgColor);
+    int vy = h - (vFont == 4 ? 36 : 27);
+    uiDrawFitted(sprTile, stateText, pad, vy, vAvail, vFont);
     sprTile.setTextDatum(TL_DATUM);
+
+    // --- Type icon: bottom-right, same corner every other tile type uses ---
+    drawActionIcon(sprTile, w - 19, h - 19, flashing ? COL_ACCENT : COL_DIM);
 
     pushSpriteAndDelete(sprTile, x, y);
     return;
