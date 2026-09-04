@@ -55,9 +55,11 @@ circles never quite reads as a real cloud, no matter how the AA on their
 seams is fixed. Tracing amCharts' actual cloud path gets the proportions
 right in a way that's impractical to hand-tune from primitives.
 
-This is the first step of a larger forecast-page visual pass (see git log
-for the up-to-date state) - not yet done: amCharts' "layered" look (a
-smaller lighter cloud puff peeking from behind the main one, used for the
-fully-overcast condition) reuses this exact same path at a second scale and
-color, so it's a cheap follow-up once the base shape is confirmed to look
-right on hardware.
+The "layered" look amCharts uses for the fully-overcast and thunderstorm
+conditions (`cloudy.svg` / `thunder.svg` - a smaller, lighter cloud puff
+peeking from behind the main one, pure depth with no separate meaning)
+reuses this exact same path a second time, just scaled down and offset -
+see `CLOUD_BACK_SCALE`/`CLOUD_BACK_DX`/`CLOUD_BACK_DY` in `main.ino`,
+derived from amCharts' own transform on the back copy in those two SVGs.
+Partly-cloudy and rain/snow keep a single cloud, matching amCharts'
+`cloudy-day/night-*.svg` and `rainy-*.svg` (no back puff in either).

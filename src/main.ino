@@ -1843,6 +1843,17 @@ String weatherCodeLabel(int code) {
 // to retune each one for the new bitmap's slightly different proportions.
 static const float CLOUD_PUFF_SIZE_RATIO = 22.0f / 31.6f;
 
+// The amCharts "layered" look (cloudy.svg / thunder.svg): a second copy of
+// the same cloud-puff path, scaled down and offset, peeking from behind the
+// main one. Derived from amCharts' own transforms on the two copies (see
+// ASSETS.md) - CLOUD_BACK_SCALE is the back puff's size relative to the
+// front one; CLOUD_BACK_DX/DY is the back puff's centre offset from the
+// front puff's centre, in the bitmap's native 64-unit canvas space (i.e.
+// before either scale or CLOUD_PUFF_SIZE_RATIO are applied).
+static const float CLOUD_BACK_SCALE = 0.6f;
+static const float CLOUD_BACK_DX = -2.76f;
+static const float CLOUD_BACK_DY = -10.06f;
+
 // Renders the baked cloud-puff bitmap (WeatherIcons.h - see ASSETS.md for
 // where it comes from) centred at (cx, cy), box-downsampled from its
 // native 64x64 to whatever `scale` calls for (never upscaled in practice -
@@ -1942,7 +1953,14 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
   }
 
   int cloudCy = cy - S(2);
-  if (code >= 1 && code <= 3) {
+  // Partly-cloudy (1-2) shows a sun/moon peeking past a single cloud, same
+  // as amCharts' cloudy-day/night-N.svg. Fully overcast (3) and storms (95+)
+  // have nothing peeking out, so amCharts gives those a second, smaller,
+  // lighter cloud puff layered behind the main one instead (cloudy.svg /
+  // thunder.svg) - pure depth, no separate meaning. Rain/snow keep the
+  // single cloud (matches amCharts' rainy-*.svg, which has no back puff).
+  bool layeredCloud = (code == 3 || code >= 95);
+  if (code >= 1 && code <= 2) {
     uiFillCircle(d, cx - S(7), cloudCy - S(7), S(6), sunColor); // sun/moon peeking out for partly-cloudy
     if (!isDay) {
       uiFillCircle(d, cx - S(4), cloudCy - S(9), S(5), bg); // crescent cutout
@@ -1958,6 +1976,20 @@ void drawWeatherIcon(T& d, int cx, int cy, int code, float scale = 1.0f, bool is
   // colour anywhere (drawCloudPuff always samples the actual pixel
   // underneath, so it composites correctly on both the plain page bg and
   // a sprite tile's card colour with no cutColor plumbing needed).
+  //
+  // Back puff first (painted under), front puff second (painted over it) -
+  // same z-order and same path, just CLOUD_BACK_SCALE smaller and offset
+  // by (CLOUD_BACK_DX, CLOUD_BACK_DY) native-canvas units, both derived
+  // from amCharts' own transform on the back puff in cloudy.svg/thunder.svg
+  // (translate(-10,-8), scale(0.6), composed with the outer group translate)
+  // relative to the front puff's transform - see ASSETS.md.
+  if (layeredCloud) {
+    float k = scale * CLOUD_PUFF_SIZE_RATIO; // pixels per native-canvas unit at this scale
+    int backCx = cx + (int)roundf(CLOUD_BACK_DX * k);
+    int backCy = cloudCy + (int)roundf(CLOUD_BACK_DY * k);
+    uint16_t cloudBackFill = blendColor565(cloudFill, fixColor565(TFT_WHITE), 55);
+    drawCloudPuff(d, backCx, backCy, scale * CLOUD_BACK_SCALE * CLOUD_PUFF_SIZE_RATIO, cloudBackFill, cloudStroke);
+  }
   drawCloudPuff(d, cx, cloudCy, scale * CLOUD_PUFF_SIZE_RATIO, cloudFill, cloudStroke);
 
   if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {

@@ -239,11 +239,13 @@ those never had a shape problem, only the cloud did.
   value (tuned against the old three-circle cloud's footprint) to the
   bitmap's slightly different native proportions, so no call site needed
   retuning when the bitmap was swapped in.
-- Not yet done: amCharts' "layered" look (a smaller, lighter cloud peeking
-  from behind the main one, used for the fully-overcast condition with no
-  sun/moon) reuses this exact same path at a second scale/color - see
-  `ASSETS.md` for the plan. Currently every cloud-bearing condition
-  (partly-cloudy, overcast, rain, snow, storm) draws the same single puff.
+- Overcast (WMO 3) and storms (95+) get amCharts' "layered" look - a
+  second, smaller, lighter copy of the same puff drawn first (behind),
+  offset by `CLOUD_BACK_DX`/`DY` native-canvas units and scaled by
+  `CLOUD_BACK_SCALE`, both derived from amCharts' own transform on the back
+  copy in `cloudy.svg`/`thunder.svg` - see `ASSETS.md`. Partly-cloudy (1-2)
+  and rain/snow keep a single puff, matching amCharts' own source (no back
+  puff in `cloudy-day/night-*.svg` or `rainy-*.svg`).
 - To regenerate after editing `tools/svg2icon.py`:
   `python3 tools/svg2icon.py > src/WeatherIcons.h`.
 
