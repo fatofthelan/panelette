@@ -4544,10 +4544,13 @@ void handleRoot() {
        String(wifi ? (String(WiFi.RSSI()) + " dBm on " + htmlEscape(WiFi.SSID())) : String("not connected")) + "</span></div>";
   h += "<div class='row'><b>Address</b><br><span class='muted'>" +
        String(wifi ? (WiFi.localIP().toString() + "  &middot;  " + htmlEscape(sanitizeHostname(cfg.deviceName)) + ".local") : String("&mdash;")) + "</span></div>";
-  h += "<div class='row'><b>Home Assistant</b><br><button type='button' onclick='haTest(this)'>Test</button> "
+  // Both rows' leading element (button / version text) is pinned to the same
+  // width so the two pills line up at the same x regardless of how wide
+  // "Test" vs "vX.Y.Z" happen to render.
+  h += "<div class='row'><b>Home Assistant</b><br><button type='button' onclick='haTest(this)' style='width:70px'>Test</button>"
        "<span id='haStat' class='pill " + String(haPill) + "' style='margin-left:10px'>" +
        htmlEscape(haConnLabel(haConnState)) + "</span></div>";
-  h += "<div class='row'><b>Firmware</b><br><span class='muted'>v" FW_VERSION "</span>"
+  h += "<div class='row'><b>Firmware</b><br><span class='muted' style='display:inline-block;width:70px'>v" FW_VERSION "</span>"
        "<span id='fwStat' class='pill' style='margin-left:10px'>Checking...</span>"
        "<div id='fwNotice' class='notice' style='display:none;margin:8px 0 0'></div></div>";
   h += "</section>";
