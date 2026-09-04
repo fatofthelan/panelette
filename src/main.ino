@@ -183,8 +183,8 @@ const int BACKLIGHT_PIN = 21;
 TFT_eSprite sprTile = TFT_eSprite(&tft);
 
 // Screen + tile-grid geometry. NOT const - applyLayout() rewrites these for
-// the active cfg.orientation: portrait = 240x320 with a 2x3 grid, landscape =
-// 320x240 with a 3x2 grid. Everything downstream reads these live values.
+// the active cfg.rotation: portrait (0/2) = 240x320 with a 2x3 grid, landscape
+// (1/3) = 320x240 with a 3x2 grid. Everything downstream reads these live.
 int SCREEN_W = 240;
 int SCREEN_H = 320;
 const int HEADER_H = 34;
@@ -197,6 +197,16 @@ int COL_X[3]  = {8, 124, 0};       // x of each column (GRID_COLS entries used)
 int GRID_Y[3] = {42, 120, 198};    // y of each row    (GRID_ROWS entries used)
 int CELL_W    = 108;
 int CELL_H    = 70;
+
+// Timer countdown view (drawTimersPageFull() / handleTimersPageTap()).
+int TIMER_LABEL_Y, TIMER_COUNTDOWN_Y;
+int TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y;
+
+// Long-press brightness overlay (drawBrightnessOverlay() and friends).
+int BRO_W, BRO_H, BRO_X, BRO_Y, BRO_VAL_Y, BRO_TRK_W, BRO_TRK_X, BRO_TRK_Y, BRO_TRK_H;
+
+// Timer-expired dialog (drawTimerExpiredDialog() / handleTimerDialogTouch()).
+int DIALOG_W, DIALOG_H, DIALOG_X, DIALOG_Y, DIALOG_BTN_W, DIALOG_BTN_H, DIALOG_BTN_Y, DIALOG_STOP_X, DIALOG_RESTART_X;
 // gCardRadius (rounded/square) is a runtime value - see applyCornerStyle()
 // landscapeMode() / applyLayout() are defined just after `DeviceConfig cfg`.
 
@@ -332,9 +342,9 @@ const char* timezonePosixByKey(const String& key) {
 DeviceConfig cfg;
 TileRuntime tileRuntime[MAX_PAGES][MAX_TILES];
 
-bool landscapeMode() { return strcmp(cfg.orientation, "landscape") == 0; }
+bool landscapeMode() { return cfg.rotation == 1 || cfg.rotation == 3; }
 
-// Recompute SCREEN_* + the tile grid for cfg.orientation. Called by
+// Recompute SCREEN_* + the tile grid for cfg.rotation. Called by
 // applyScreenRotation() (which also sets the tft/ts hardware rotation).
 void applyLayout() {
   if (landscapeMode()) { SCREEN_W = 320; SCREEN_H = 240; GRID_COLS = 3; GRID_ROWS = 2; }
@@ -346,7 +356,50 @@ void applyLayout() {
   CELL_H = (contentH - (GRID_ROWS - 1) * CELL_GAP - 2) / GRID_ROWS;
   for (int c = 0; c < GRID_COLS; c++) COL_X[c] = edge + c * (CELL_W + CELL_GAP);
   for (int r = 0; r < GRID_ROWS; r++) GRID_Y[r] = HEADER_H + 6 + r * (CELL_H + CELL_GAP);
+
+  // Timer countdown view - landscape has ~86 px less height to fit it above the footer.
+  if (landscapeMode()) {
+    TIMER_LABEL_Y = HEADER_H + 20; TIMER_COUNTDOWN_Y = HEADER_H + 62;
+    TIMER_CANCEL_BTN_W = 130; TIMER_CANCEL_BTN_H = 32;
+    TIMER_CANCEL_BTN_Y = TIMER_COUNTDOWN_Y + 42;
+  } else {
+    TIMER_LABEL_Y = HEADER_H + 40; TIMER_COUNTDOWN_Y = HEADER_H + 90;
+    TIMER_CANCEL_BTN_W = 140; TIMER_CANCEL_BTN_H = 40;
+    TIMER_CANCEL_BTN_Y = HEADER_H + 150;
+  }
+  TIMER_CANCEL_BTN_X = (SCREEN_W - TIMER_CANCEL_BTN_W) / 2;
+
+  // Brightness overlay - same width either way, shorter box in landscape.
+  BRO_W = 182;
+  BRO_H = landscapeMode() ? 150 : 234;
+  BRO_X = (SCREEN_W - BRO_W) / 2;
+  BRO_Y = HEADER_H + (landscapeMode() ? 6 : 8);
+  BRO_VAL_Y = BRO_Y + (landscapeMode() ? 26 : 38);
+  BRO_TRK_W = 66;
+  BRO_TRK_X = SCREEN_W / 2 - BRO_TRK_W / 2;
+  BRO_TRK_Y = BRO_Y + (landscapeMode() ? 58 : 82);
+  BRO_TRK_H = BRO_Y + BRO_H - (landscapeMode() ? 14 : 18) - BRO_TRK_Y;
+
+  // Timer-expired dialog - same size, just re-centred.
+  DIALOG_W = 200; DIALOG_H = 110;
+  DIALOG_X = (SCREEN_W - DIALOG_W) / 2;
+  DIALOG_Y = (SCREEN_H - DIALOG_H) / 2;
+  DIALOG_BTN_W = 84; DIALOG_BTN_H = 34;
+  DIALOG_BTN_Y = DIALOG_Y + DIALOG_H - DIALOG_BTN_H - 12;
+  DIALOG_STOP_X = DIALOG_X + 10;
+  DIALOG_RESTART_X = DIALOG_X + DIALOG_W - DIALOG_BTN_W - 10;
 }
+
+// Touch-calibration wizard state (module + functions live just above setup();
+// declared this early so every screen that can trigger it - Status page tap,
+// handleSaveDevice(), handleCalibrateTouch() - can reach it).
+bool gTouchCalActive = false;
+bool gTouchCalFirstRun = false;
+bool gTouchCalReady = false;          // false = loop() still needs to enter/draw
+int  gTouchCalStep = 0;
+long gTouchCalRaw[3][2];
+unsigned long gTouchCalEnterMs = 0;
+const int TCAL_M = 24;                // target inset from the screen edges
 
 // Set true this session if a configured static IP failed to associate and
 // we fell back to DHCP (shown on the Status page and in the web UI).
@@ -375,17 +428,13 @@ void applyTheme(bool dark) {
 
 // Portrait either way; rotation 2 = USB on one side, 0 = flipped 180.
 // Touch stays on rotation 2 (its calibration was measured there) and
-// readTouchXY() point-reflects the mapped coords when flipped instead.
-// TFT_eSPI rotation for the current orientation + flip:
-//   portrait  = 2 (USB bottom-left) / 0 flipped
-//   landscape = 1 / 3 flipped
-int screenRotation() {
-  if (landscapeMode()) return cfg.flipScreen ? 3 : 1;
-  return cfg.flipScreen ? 0 : 2;
-}
+// cfg.rotation *is* the TFT_eSPI rotation value (0-3 = 0/90/180/270 deg) -
+// no translation layer. 2 (180 deg = portrait, USB at bottom) is the shipped
+// default; 1/3 are landscape.
+int screenRotation() { return cfg.rotation; }
 
 void applyScreenRotation() {
-  applyLayout();                 // SCREEN_* + grid for the orientation
+  applyLayout();                 // SCREEN_* + grid for the current rotation
   int r = screenRotation();
   tft.setRotation(r);
   ts.setRotation(r);             // touch raw coords come in display-aligned
@@ -954,8 +1003,7 @@ void setDefaultConfig() {
   cfg.haLiveUpdates = false;
   cfg.darkTheme = true;
   cfg.use12Hour = false;
-  cfg.flipScreen = false;
-  strlcpy(cfg.orientation, "portrait", sizeof(cfg.orientation));
+  cfg.rotation = 2; // portrait, USB at bottom
   cfg.uiFontSize = 1;
   strlcpy(cfg.uiTypeface, "mono", sizeof(cfg.uiTypeface));           // sans | mono
   strlcpy(cfg.colorScheme, "phosphor", sizeof(cfg.colorScheme));     // cool | warm | phosphor | neutral
@@ -1097,9 +1145,10 @@ bool loadConfig() {
   cfg.haLiveUpdates = doc["haLiveUpdates"] | false;
   cfg.darkTheme = doc["darkTheme"] | true;
   cfg.use12Hour = doc["use12Hour"] | false;
-  cfg.flipScreen = doc["flipScreen"] | false;
-  strlcpy(cfg.orientation, doc["orientation"] | "portrait", sizeof(cfg.orientation));
-  if (strcmp(cfg.orientation,"portrait") && strcmp(cfg.orientation,"landscape")) strlcpy(cfg.orientation,"portrait",sizeof(cfg.orientation));
+  // "rotation" is the current field; "flipScreen" is what every config saved
+  // before the landscape feature has (true = portrait flipped = rotation 0).
+  if (doc.containsKey("rotation")) cfg.rotation = (uint8_t)constrain((int)doc["rotation"], 0, 3);
+  else                             cfg.rotation = (doc["flipScreen"] | false) ? 0 : 2;
   cfg.uiFontSize = (uint8_t)constrain((int)(doc["uiFontSize"] | 1), 0, 2);
   strlcpy(cfg.uiTypeface, doc["uiTypeface"] | "sans", sizeof(cfg.uiTypeface));
   if (strcmp(cfg.uiTypeface, "sans") != 0 && strcmp(cfg.uiTypeface, "mono") != 0)
@@ -1208,8 +1257,7 @@ void buildConfigJson(JsonDocument& doc) {
   doc["haLiveUpdates"] = cfg.haLiveUpdates;
   doc["darkTheme"] = cfg.darkTheme;
   doc["use12Hour"] = cfg.use12Hour;
-  doc["flipScreen"] = cfg.flipScreen;
-  doc["orientation"] = cfg.orientation;
+  doc["rotation"] = cfg.rotation;
   doc["uiFontSize"] = cfg.uiFontSize;
   doc["uiTypeface"] = cfg.uiTypeface;
   doc["colorScheme"] = cfg.colorScheme;
@@ -2916,11 +2964,11 @@ void drawLocalTileSprite(int tileIdx, int x, int y, int w, int h, bool force, bo
   const int pad = 12;
   drawTileLabel(sprTile, label, pad, w, w - pad - (corner.length() ? 32 : 6), bg);
 
-  bool shortVal = value.length() <= 4;
-  int vFont = shortVal ? (cfg.uiFontSize == 0 ? 2 : 4) : 2;
+  int vAvail = w - pad - 26;
+  int vFont = (cfg.uiFontSize != 0 && uiTextWidth(sprTile, value, 4) <= vAvail) ? 4 : 2;
   sprTile.setTextColor(active ? COL_ACCENT : COL_TEXT, bg);
   int vy = h - (vFont == 4 ? 36 : 27);
-  uiDrawFitted(sprTile, value, pad, vy, w - pad - 26, vFont);
+  uiDrawFitted(sprTile, value, pad, vy, vAvail, vFont);
   sprTile.setTextDatum(TL_DATUM);
 
   if (corner.length()) {
@@ -3031,14 +3079,17 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
   drawTileLabel(sprTile, tl.label, pad, w, w - pad - 6, bgColor);
 
   // --- Value: bottom-left, the tile's focal point ---
-  bool shortVal = (stateText.length() <= 4);
-  int vFont = shortVal ? (cfg.uiFontSize == 0 ? 2 : 4) : 2;
+  // Big cut only if it actually fits this cell - a char-count heuristic
+  // (<=4 chars) used to pick it and truncate ("100%" -> "1...") on any cell
+  // narrower than the original portrait 2x3 grid (e.g. landscape's 3x2).
+  int vAvail = w - pad - 26;
+  int vFont = (cfg.uiFontSize != 0 && uiTextWidth(sprTile, stateText, 4) <= vAvail) ? 4 : 2;
   uint16_t valColor = unavail ? COL_DIM
                     : activeState ? COL_ACCENT
                     : (rt.known || isSensor || strlen(tl.entityId) == 0) ? COL_TEXT : COL_DIM;
   sprTile.setTextColor(valColor, bgColor);
   int vy = h - (vFont == 4 ? 36 : 27);
-  uiDrawFitted(sprTile, stateText, pad, vy, w - pad - 26, vFont);
+  uiDrawFitted(sprTile, stateText, pad, vy, vAvail, vFont);
   sprTile.setTextDatum(TL_DATUM);
 
   // --- Type icon: bottom-right, out of the label's way ---
@@ -3067,14 +3118,8 @@ void drawTileSprite(int tileIdx, int slot, bool wide, bool force) {
 // page redraws. Drawn straight onto the TFT (no sprite) so it can sit on
 // top of the grid without disturbing it; only the value + fill repaint
 // during a drag.
-const int BRO_W = 182, BRO_H = 234;
-const int BRO_X = (SCREEN_W - BRO_W) / 2;
-const int BRO_Y = HEADER_H + 8;
-const int BRO_VAL_Y  = BRO_Y + 38;
-const int BRO_TRK_W  = 66;
-const int BRO_TRK_X  = SCREEN_W / 2 - BRO_TRK_W / 2;
-const int BRO_TRK_Y  = BRO_Y + 82;
-const int BRO_TRK_H  = BRO_Y + BRO_H - 18 - BRO_TRK_Y;
+// Geometry set in applyLayout() (see the BRO_* globals up near SCREEN_W) -
+// landscape's shorter screen needs a shorter box.
 
 void drawBrightnessOverlayValue(int percent) {
   // Percentage readout - the clear box is deliberately generous since the
@@ -3134,7 +3179,7 @@ void drawHeader(bool force) {
       if (hour12 == 0) hour12 = 12;
       snprintf(timeBuf, sizeof(timeBuf), "%d:%02d %s", hour12, tmNow.tm_min, tmNow.tm_hour >= 12 ? "PM" : "AM");
     } else {
-      strftime(timeBuf, sizeof(timeBuf), "%H:%M", &tmNow);
+      snprintf(timeBuf, sizeof(timeBuf), "%d:%02d", tmNow.tm_hour, tmNow.tm_min); // no leading zero
     }
   }
   String timeText(timeBuf);
@@ -3232,67 +3277,82 @@ void drawGridBackground() {
 // out of sync with each other.
 // 4 info rows (WiFi / IP / Host / HA), then Theme + Flip side by side,
 // then a full-width Reboot button.
-const int STATUS_INFO_Y0  = HEADER_H + 20;                     // 54
-const int STATUS_ROW_H    = 27;
-const int STATUS_HA_ROW_Y = STATUS_INFO_Y0 + 3 * STATUS_ROW_H; // 135
-const int STATUS_BTN_H     = 34;
-const int STATUS_BTN_FULL_X = 12, STATUS_BTN_FULL_W = 216;
-const int STATUS_BTN_L_X   = 12,  STATUS_BTN_HALF_W = 103;
-const int STATUS_BTN_R_X   = 125;
-const int STATUS_ROW1_BTN_Y = STATUS_INFO_Y0 + 4 * STATUS_ROW_H + 4;  // 166  (Theme | Flip)
-const int STATUS_ROW2_BTN_Y = STATUS_ROW1_BTN_Y + STATUS_BTN_H + 12;  // 212  (Reboot); bottom 246
-// version footer sits at ROW2 + BTN_H + 4 = 250; footer starts at 276
+// Status page geometry, recomputed per call from the live SCREEN_W/H so it
+// tracks cfg.rotation. Shared by drawStatusPageFull() and
+// handleStatusPageTap() - one source of truth keeps drawing and hit-testing
+// in sync (same reason the tile grid is a single function). Struct itself is
+// in config_types.h - the .ino auto-prototype gotcha (a function returning a
+// custom type needs that type defined before the auto-generated prototypes).
+StatusLayout statusLayout() {
+  StatusLayout L;
+  L.rowKeyX = 14; L.rowValX = 86; L.rowValW = SCREEN_W - 86 - 14;
+  if (landscapeMode()) {
+    // Extra width buys a 3rd column, so all 3 buttons fit in one row below
+    // the (shorter) info rows instead of stacking two-tier like portrait.
+    L.row0Y = HEADER_H + 6; L.rowH = 22;
+    int gap = 8, bw = (SCREEN_W - 24 - 2 * gap) / 3, by = L.row0Y + 4 * L.rowH + 10, bh = 30;
+    L.darkX = 12;                  L.darkY = by; L.darkW = bw; L.darkH = bh;
+    L.rotX  = 12 + bw + gap;       L.rotY  = by; L.rotW  = bw; L.rotH  = bh;
+    L.rebootX = 12 + 2 * (bw + gap); L.rebootY = by; L.rebootW = bw; L.rebootH = bh;
+    L.verY = by + bh + 10;
+  } else {
+    L.row0Y = HEADER_H + 20; L.rowH = 27;
+    L.darkY = L.row0Y + 4 * L.rowH + 4; L.darkX = 12; L.darkW = 103; L.darkH = 34;
+    L.rotX  = 125; L.rotY = L.darkY; L.rotW = 103; L.rotH = 34;
+    L.rebootX = 12; L.rebootY = L.darkY + L.darkH + 12; L.rebootW = 216; L.rebootH = 34;
+    L.verY = L.rebootY + L.rebootH + 4;
+  }
+  return L;
+}
 
-void drawStatusButton(int bx, int by, int bw, const String& label, bool danger) {
+void drawStatusButton(int bx, int by, int bw, int bh, const String& label, bool danger) {
   uint16_t fill = danger ? fixColor565(0xF36D) : COL_PANEL;
   uint16_t txt  = danger ? fixColor565(0xFFFF) : COL_TEXT;
-  uiFillRR(tft, bx, by, bw, STATUS_BTN_H, gCardRadius, fill);
-  if (showTileBorder) uiStrokeRR(tft, bx, by, bw, STATUS_BTN_H, gCardRadius, COL_STROKE, fill);
+  uiFillRR(tft, bx, by, bw, bh, gCardRadius, fill);
+  if (showTileBorder) uiStrokeRR(tft, bx, by, bw, bh, gCardRadius, COL_STROKE, fill);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(txt, fill);
-  uiDrawFitted(tft, label, bx + bw / 2, by + STATUS_BTN_H / 2, bw - 14, 2, false);
+  uiDrawFitted(tft, label, bx + bw / 2, by + bh / 2, bw - 14, 2, false);
   tft.setTextDatum(TL_DATUM);
 }
 
-void drawStatusRow(int idx, const char* key, const String& val, uint16_t valColor) {
-  int ry = STATUS_INFO_Y0 + idx * STATUS_ROW_H;
+void drawStatusRow(const StatusLayout& L, int idx, const char* key, const String& val, uint16_t valColor) {
+  int ry = L.row0Y + idx * L.rowH;
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, key, 14, ry, 2);
+  uiDrawString(tft, key, L.rowKeyX, ry, 2);
   tft.setTextColor(valColor, COL_BG);
-  uiDrawFitted(tft, val, 86, ry, SCREEN_W - 86 - 14, 2, false);
+  uiDrawFitted(tft, val, L.rowValX, ry, L.rowValW, 2, false);
 }
 
 void drawStatusPageFull() {
   tft.fillRect(0, HEADER_H, SCREEN_W, SCREEN_H - HEADER_H - FOOTER_H, COL_BG);
+  StatusLayout L = statusLayout();
 
   bool wifi = (WiFi.status() == WL_CONNECTED);
 
-  drawStatusRow(0, "WiFi", wifi ? (String(WiFi.RSSI()) + " dBm") : String("Not connected"), COL_TEXT);
+  drawStatusRow(L, 0, "WiFi", wifi ? (String(WiFi.RSSI()) + " dBm") : String("Not connected"), COL_TEXT);
   {
     String ipText = wifi ? WiFi.localIP().toString() : String("-");
     if (staticIpFellBack) ipText += "  !DHCP";
-    drawStatusRow(1, "IP", ipText, COL_TEXT);
+    drawStatusRow(L, 1, "IP", ipText, COL_TEXT);
   }
-  drawStatusRow(2, "Host", String(cfg.deviceName) + ".local", COL_TEXT);
+  drawStatusRow(L, 2, "Host", String(cfg.deviceName) + ".local", COL_TEXT);
 
   uint16_t haColor = (haConnState == HA_CONN_OK) ? fixColor565(0x5E91)          // green
                    : (haConnState == HA_CONN_AUTH_FAIL ||
                       haConnState == HA_CONN_UNREACHABLE) ? fixColor565(0xF36D) // red
                    : COL_DIM;
-  drawStatusRow(3, "HA", haConnLabel(haConnState), haColor);
+  drawStatusRow(L, 3, "HA", haConnLabel(haConnState), haColor);
 
-  drawStatusButton(STATUS_BTN_L_X, STATUS_ROW1_BTN_Y, STATUS_BTN_HALF_W,
-                   cfg.darkTheme ? "Dark" : "Light", false);
-  drawStatusButton(STATUS_BTN_R_X, STATUS_ROW1_BTN_Y, STATUS_BTN_HALF_W,
-                   cfg.flipScreen ? "Flip: On" : "Flip: Off", false);
-  drawStatusButton(STATUS_BTN_FULL_X, STATUS_ROW2_BTN_Y, STATUS_BTN_FULL_W,
-                   rebootArmed ? "Tap again to reboot" : "Reboot", rebootArmed);
+  drawStatusButton(L.darkX, L.darkY, L.darkW, L.darkH, cfg.darkTheme ? "Dark" : "Light", false);
+  drawStatusButton(L.rotX, L.rotY, L.rotW, L.rotH, String(cfg.rotation * 90) + "\xB0", false);
+  drawStatusButton(L.rebootX, L.rebootY, L.rebootW, L.rebootH,
+                   rebootArmed ? "Tap again" : "Reboot", rebootArmed);
 
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, String(FW_NAME) + "  v" + FW_VERSION,
-               SCREEN_W / 2, STATUS_ROW2_BTN_Y + STATUS_BTN_H + 4, 1);
+  uiDrawString(tft, String(FW_NAME) + "  v" + FW_VERSION, SCREEN_W / 2, L.verY, 1);
   tft.setTextDatum(TL_DATUM);
 }
 
@@ -3310,70 +3370,82 @@ void drawForecastPageFull() {
 
   // "Current conditions" hero row, matching the layout of Home Assistant's
   // own weather card: icon + condition + weather location on the left,
-  // current temp + today's high/low on the right.
+  // current temp + today's high/low on the right. Landscape has 86 px less
+  // height to work with (240 vs 320 tall), so the hero + the vertical rhythm
+  // of the 5-day columns below are compressed - not just SCREEN_H-relative,
+  // the whole hero is shorter.
+  bool ls = landscapeMode();
   const int heroTop = HEADER_H;
+  float heroIconScale = ls ? 1.15f : 1.5f;
   const int heroIconCx = 40;
-  const int heroIconCy = heroTop + 38;
+  int heroIconCy = heroTop + (ls ? 26 : 38);
+  int condY  = heroTop + (ls ? 4  : 12);
+  int locY   = heroTop + (ls ? 24 : 40);
+  int tempY  = heroTop + (ls ? 2  : 10);
+  int hiLoY  = heroTop + (ls ? 26 : 44);
+  int dividerY = heroTop + (ls ? 46 : 76);
 
-  drawWeatherIcon(tft, heroIconCx, heroIconCy, weatherCurrentCode, 1.5f, weatherIsDay, COL_BG);
+  drawWeatherIcon(tft, heroIconCx, heroIconCy, weatherCurrentCode, heroIconScale, weatherIsDay, COL_BG);
 
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(COL_TEXT, COL_BG);
-  uiDrawString(tft, weatherCodeLabel(weatherCurrentCode), 68, heroTop + 12, fontHeader());
+  uiDrawString(tft, weatherCodeLabel(weatherCurrentCode), 68, condY, fontHeader());
   tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawFitted(tft, String(cfg.weatherLocationName), 68, heroTop + 40, SCREEN_W - 68 - 58, fontStatusRow());
+  uiDrawFitted(tft, String(cfg.weatherLocationName), 68, locY, SCREEN_W - 68 - 58, fontStatusRow());
 
   String curTemp = String((int)roundf(weatherCurrentTemp));
   tft.setTextDatum(TR_DATUM);
   tft.setTextColor(COL_TEXT, COL_BG);
   int curTempW = tft.textWidth(curTemp, 4);
-  uiDrawString(tft, curTemp, SCREEN_W - 8, heroTop + 10, 4);
-  tft.drawSmoothCircle(SCREEN_W - 8 - curTempW - 6, heroTop + 14, 2, COL_TEXT, COL_BG);
+  uiDrawString(tft, curTemp, SCREEN_W - 8, tempY, 4);
+  tft.drawSmoothCircle(SCREEN_W - 8 - curTempW - 6, tempY + 4, 2, COL_TEXT, COL_BG);
 
   String hiLo = String((int)roundf(forecast[0].tempMax)) + "/" + String((int)roundf(forecast[0].tempMin));
   tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, hiLo, SCREEN_W - 8, heroTop + 44, fontStatusRow());
+  uiDrawString(tft, hiLo, SCREEN_W - 8, hiLoY, fontStatusRow());
 
-  int dividerY = heroTop + 76;
   tft.drawFastHLine(8, dividerY, SCREEN_W - 16, COL_STROKE);
 
   int colW = SCREEN_W / 5;
-  int bodyTop = dividerY + 10;
+  int bodyTop = dividerY + (ls ? 6 : 10);
   int rf = fontStatusRow();
+  float dayIconScale = ls ? 0.8f : 1.0f;
+  int dayLabelDy = ls ? 6  : 10;
+  int dayIconDy  = ls ? 30 : 46;
+  int hiDy       = ls ? 52 : 82;
+  int loDy       = ls ? 70 : 106;
+  int vlineH     = (SCREEN_H - FOOTER_H) - (bodyTop + dayLabelDy) - 4;
 
   tft.setTextDatum(MC_DATUM);
 
   for (int i = 0; i < 5; i++) {
     int cx = i * colW + colW / 2;
 
-    if (i > 0) tft.drawFastVLine(i * colW, bodyTop + 8, 140, COL_STROKE);
+    if (i > 0) tft.drawFastVLine(i * colW, bodyTop + dayLabelDy, vlineH, COL_STROKE);
 
     tft.setTextColor(COL_DIM, COL_BG);
-    uiDrawString(tft, forecast[i].dayLabel, cx, bodyTop + 10, rf);
+    uiDrawString(tft, forecast[i].dayLabel, cx, bodyTop + dayLabelDy, rf);
 
-    drawWeatherIcon(tft, cx, bodyTop + 46, forecast[i].code, 1.0f, true, COL_BG);
+    drawWeatherIcon(tft, cx, bodyTop + dayIconDy, forecast[i].code, dayIconScale, true, COL_BG);
 
     tft.setTextColor(COL_TEXT, COL_BG);
     String hi = String((int)roundf(forecast[i].tempMax));
     int hiW = tft.textWidth(hi, rf);
-    uiDrawString(tft, hi, cx, bodyTop + 82, rf);
-    tft.drawSmoothCircle(cx + hiW / 2 + 4, bodyTop + 76, 2, COL_TEXT, COL_BG);
+    uiDrawString(tft, hi, cx, bodyTop + hiDy, rf);
+    tft.drawSmoothCircle(cx + hiW / 2 + 4, bodyTop + hiDy - 6, 2, COL_TEXT, COL_BG);
 
     tft.setTextColor(COL_DIM, COL_BG);
     String lo = String((int)roundf(forecast[i].tempMin));
     int loW = tft.textWidth(lo, rf);
-    uiDrawString(tft, lo, cx, bodyTop + 106, rf);
-    tft.drawSmoothCircle(cx + loW / 2 + 4, bodyTop + 100, 2, COL_DIM, COL_BG);
+    uiDrawString(tft, lo, cx, bodyTop + loDy, rf);
+    tft.drawSmoothCircle(cx + loW / 2 + 4, bodyTop + loDy - 6, 2, COL_DIM, COL_BG);
   }
 
   tft.setTextDatum(TL_DATUM);
 }
 
-// Shared with handleTimersPageTap() so drawing and touch hit-testing
-// can never drift out of sync with each other.
-const int TIMER_CANCEL_BTN_W = 140, TIMER_CANCEL_BTN_H = 40;
-const int TIMER_CANCEL_BTN_X = (SCREEN_W - TIMER_CANCEL_BTN_W) / 2;
-const int TIMER_CANCEL_BTN_Y = HEADER_H + 150;
+// Timer countdown view geometry is set in applyLayout() - see the globals
+// up near SCREEN_W. Shared by drawTimersPageFull() and handleTimersPageTap().
 
 // The Cancel button's screen position genuinely overlaps where the preset
 // grid buttons sit (there's no free space to relocate it to on a screen
@@ -3397,9 +3469,9 @@ void drawTimersPageFull() {
 
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(COL_DIM, COL_BG);
-    uiDrawString(tft, "Time Remaining", SCREEN_W / 2, HEADER_H + 40, 2);
+    uiDrawString(tft, "Time Remaining", SCREEN_W / 2, TIMER_LABEL_Y, 2);
     tft.setTextColor(COL_TEXT, COL_BG);
-    uiDrawString(tft, buf, SCREEN_W / 2, HEADER_H + 90, 4);
+    uiDrawString(tft, buf, SCREEN_W / 2, TIMER_COUNTDOWN_Y, 4);
 
     uiFillRR(tft, TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, gCardRadius, COL_PANEL);
     if (showTileBorder) uiStrokeRR(tft, TIMER_CANCEL_BTN_X, TIMER_CANCEL_BTN_Y, TIMER_CANCEL_BTN_W, TIMER_CANCEL_BTN_H, gCardRadius, COL_STROKE, COL_PANEL);
@@ -3467,27 +3539,42 @@ void updateGridTiles(bool force) {
 void drawProvisioningScreen(bool retrying) {
   tft.fillScreen(COL_BG);
   int cx = SCREEN_W / 2;
+  bool ls = landscapeMode();
+
+  // Portrait has 320px of height to spread across; landscape only 240, so
+  // the whole block is compressed vertically (tighter line spacing, smaller
+  // SSID card) rather than reusing the portrait Y positions - those would
+  // run the "retrying" line off the bottom of a landscape panel.
+  int titleY = ls ? 14 : 40;
+  int subY   = ls ? 40 : 78;
+  int cardY  = ls ? 62 : 108;
+  int cardH  = ls ? 40 : 52;
+  int ssidY  = ls ? (cardY + 11) : 122;
+  int fold1Y = ls ? 116 : 178;
+  int fold2Y = ls ? 134 : 200;
+  int fold3Y = ls ? 152 : 228;
+  int retryY = ls ? 172 : 264;
 
   tft.setTextDatum(TC_DATUM);
   tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawString(tft, "WI-FI SETUP", cx, 40, 1);
+  uiDrawString(tft, "WI-FI SETUP", cx, titleY, 1);
 
   tft.setTextColor(COL_TEXT, COL_BG);
-  uiDrawFitted(tft, "Join this network", cx, 78, SCREEN_W - 24, 2, false);
+  uiDrawFitted(tft, "Join this network", cx, subY, SCREEN_W - 24, 2, false);
 
-  uiFillRR(tft, 16, 108, SCREEN_W - 32, 52, gCardRadius, COL_PANEL, COL_BG);
-  if (showTileBorder) uiStrokeRR(tft, 16, 108, SCREEN_W - 32, 52, gCardRadius, COL_ACCENT, COL_PANEL);
+  uiFillRR(tft, 16, cardY, SCREEN_W - 32, cardH, gCardRadius, COL_PANEL, COL_BG);
+  if (showTileBorder) uiStrokeRR(tft, 16, cardY, SCREEN_W - 32, cardH, gCardRadius, COL_ACCENT, COL_PANEL);
   tft.setTextColor(COL_ACCENT, COL_PANEL);
-  uiDrawFitted(tft, gApSsid, cx, 122, SCREEN_W - 44, 4, true);
+  uiDrawFitted(tft, gApSsid, cx, ssidY, SCREEN_W - 44, 4, true);
 
   tft.setTextColor(COL_DIM, COL_BG);
-  uiDrawFitted(tft, "then follow the page", cx, 178, SCREEN_W - 24, 2, false);
-  uiDrawFitted(tft, "that pops up", cx, 200, SCREEN_W - 24, 2, false);
-  uiDrawFitted(tft, "(or open 192.168.4.1)", cx, 228, SCREEN_W - 24, 1, false);
+  uiDrawFitted(tft, "then follow the page", cx, fold1Y, SCREEN_W - 24, 2, false);
+  uiDrawFitted(tft, "that pops up", cx, fold2Y, SCREEN_W - 24, 2, false);
+  uiDrawFitted(tft, "(or open 192.168.4.1)", cx, fold3Y, SCREEN_W - 24, 1, false);
 
   if (retrying) {
     tft.setTextColor(COL_DIM, COL_BG);
-    uiDrawFitted(tft, "retrying saved network...", cx, 264, SCREEN_W - 24, 1, false);
+    uiDrawFitted(tft, "retrying saved network...", cx, retryY, SCREEN_W - 24, 1, false);
   }
   tft.setTextDatum(TL_DATUM);
 }
@@ -3685,35 +3772,36 @@ void handleTileTap(int tileIdx) {
 }
 
 void handleStatusPageTap(int x, int y) {
-  // HA row - tap anywhere on it to re-probe the connection now.
-  if (y >= STATUS_HA_ROW_Y - 8 && y < STATUS_HA_ROW_Y + STATUS_ROW_H - 4) {
+  StatusLayout L = statusLayout();
+
+  // HA row (index 3) - tap anywhere on it to re-probe the connection now.
+  int haRowY = L.row0Y + 3 * L.rowH;
+  if (y >= haRowY - 8 && y < haRowY + L.rowH - 4) {
     haConnState = HA_CONN_UNKNOWN;
     lastHaCheckMs = 0;
     pageDirty = true;
     return;
   }
 
-  // Row 1: Theme (left half) | Flip (right half)
-  if (y >= STATUS_ROW1_BTN_Y && y < STATUS_ROW1_BTN_Y + STATUS_BTN_H) {
-    if (x >= STATUS_BTN_L_X && x < STATUS_BTN_L_X + STATUS_BTN_HALF_W) {
-      cfg.darkTheme = !cfg.darkTheme;
-      applyTheme(cfg.darkTheme);
-      saveConfig();
-      pageDirty = true;
-      return;
-    }
-    if (x >= STATUS_BTN_R_X && x < STATUS_BTN_R_X + STATUS_BTN_HALF_W) {
-      cfg.flipScreen = !cfg.flipScreen;
-      applyScreenRotation();
-      saveConfig();
-      pageDirty = true;
-      return;
-    }
+  if (x >= L.darkX && x < L.darkX + L.darkW && y >= L.darkY && y < L.darkY + L.darkH) {
+    cfg.darkTheme = !cfg.darkTheme;
+    applyTheme(cfg.darkTheme);
+    saveConfig();
+    pageDirty = true;
+    return;
   }
-
-  // Row 2: Reboot (full width)
-  if (x >= STATUS_BTN_FULL_X && x < STATUS_BTN_FULL_X + STATUS_BTN_FULL_W &&
-      y >= STATUS_ROW2_BTN_Y && y < STATUS_ROW2_BTN_Y + STATUS_BTN_H) {
+  if (x >= L.rotX && x < L.rotX + L.rotW && y >= L.rotY && y < L.rotY + L.rotH) {
+    cfg.rotation = (cfg.rotation + 1) % 4;
+    cfg.touchCalibrated = false; // a new rotation needs its own touch calibration
+    gTouchCalActive = true;
+    gTouchCalFirstRun = false;
+    gTouchCalReady = false;
+    applyScreenRotation();
+    saveConfig();
+    pageDirty = true;
+    return;
+  }
+  if (x >= L.rebootX && x < L.rebootX + L.rebootW && y >= L.rebootY && y < L.rebootY + L.rebootH) {
     if (rebootArmed) {
       ESP.restart();
     } else {
@@ -3755,13 +3843,9 @@ void handleTimersPageTap(int x, int y) {
 
 // Shared with handleTimerDialogTouch() so drawing and touch hit-testing
 // can never drift out of sync with each other.
-const int DIALOG_W = 200, DIALOG_H = 110;
-const int DIALOG_X = (SCREEN_W - DIALOG_W) / 2;
-const int DIALOG_Y = (SCREEN_H - DIALOG_H) / 2;
-const int DIALOG_BTN_W = 84, DIALOG_BTN_H = 34;
-const int DIALOG_BTN_Y = DIALOG_Y + DIALOG_H - DIALOG_BTN_H - 12;
-const int DIALOG_STOP_X = DIALOG_X + 10;
-const int DIALOG_RESTART_X = DIALOG_X + DIALOG_W - DIALOG_BTN_W - 10;
+// Geometry set in applyLayout() (DIALOG_* globals up near SCREEN_W) - this
+// one is centred on SCREEN_W/H so it needs recomputing on rotation, not a
+// different shape, but const-at-240x320 would freeze it off-centre.
 
 void drawTimerExpiredDialog() {
   uiFillRR(tft, DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, gCardRadius, COL_PANEL);
@@ -3991,16 +4075,6 @@ void handleContinuousTouch() {
 // WEB SERVER
 // =========================================================
 WebServer server(80);
-
-// Touch-calibration wizard state (module + functions live just above setup();
-// declared here so handleCalibrateTouch() below can flip it on).
-bool gTouchCalActive = false;
-bool gTouchCalFirstRun = false;
-bool gTouchCalReady = false;          // false = loop() still needs to enter/draw
-int  gTouchCalStep = 0;
-long gTouchCalRaw[3][2];
-unsigned long gTouchCalEnterMs = 0;
-const int TCAL_M = 24;                // target inset from the screen edges
 
 // One-shot banner shown at the top of the settings page after a redirect
 // (e.g. the result of the HA connection probe / config import on Save).
@@ -4262,10 +4336,8 @@ void handleRoot() {
   h += "</section>";
 
   h += "<section class='card'><h2>Quick actions</h2>";
-  h += "<a class='btnlink' href='/screenshot' style='background:var(--panel2);color:var(--text);border-color:var(--border);font-weight:400'>&#128247; Screenshot</a> ";
-  h += "<form style='display:inline' method='POST' action='/reboot' onsubmit=\"return confirm('Reboot the panel now?');\">";
+  h += "<form method='POST' action='/reboot' onsubmit=\"return confirm('Reboot the panel now?');\">";
   h += "<button type='submit'>Reboot panel</button></form>";
-  h += "<div class='muted' style='margin-top:8px'>Screenshot captures the current panel screen (~2 s).</div>";
   h += "</section>";
 
   h += "<script>function haTest(b){var s=document.getElementById('haStat');b.disabled=true;s.textContent='Testing...';s.className='pill warn';"
@@ -4288,13 +4360,15 @@ void handlePanelPage() {
   h += "<input name='areaName' value='" + htmlEscape(cfg.pages[0].name) + "' placeholder='e.g. Family Room'>";
   h += "<div class='check'><input type='checkbox' id='use12h' name='use12h'" + String(cfg.use12Hour ? " checked" : "") +
        "><label for='use12h' style='margin:0'>Use 12-hour clock (AM/PM)</label></div>";
-  h += "<label>Orientation</label><select name='orientation'>";
-  h += "<option value='portrait'" + String(landscapeMode() ? "" : " selected") + ">Portrait (2&times;3 tiles)</option>";
-  h += "<option value='landscape'" + String(landscapeMode() ? " selected" : "") + ">Landscape (3&times;2 tiles)</option>";
+  h += "<label>Screen rotation</label><select name='rotation'>";
+  {
+    const char* lbls[4] = {"0&deg; &mdash; portrait", "90&deg; &mdash; landscape",
+                            "180&deg; &mdash; portrait, flipped", "270&deg; &mdash; landscape, flipped"};
+    for (int i = 0; i < 4; i++)
+      h += "<option value='" + String(i) + "'" + (cfg.rotation == i ? " selected" : "") + ">" + lbls[i] + "</option>";
+  }
   h += "</select>";
-  h += "<div class='check'><input type='checkbox' id='flipScreen' name='flipScreen'" + String(cfg.flipScreen ? " checked" : "") +
-       "><label for='flipScreen' style='margin:0'>Flip 180&deg; (mount the other way up)</label></div>";
-  h += "<div class='muted' style='margin-top:2px'>Changing orientation or flip re-runs touch calibration on the panel.</div>";
+  h += "<div class='muted' style='margin-top:2px'>180&deg; is how the panel ships. Changing this re-runs touch calibration on the panel.</div>";
   h += "<label>Time Zone</label><select name='timezone'>";
   for (int i = 0; i < TZ_TABLE_COUNT; i++) {
     h += "<option value='" + String(TZ_TABLE[i].key) + "'";
@@ -4900,15 +4974,11 @@ void handleSaveDevice() {
   }
   if (deviceForm) {
     cfg.use12Hour = server.hasArg("use12h"); // unchecked checkboxes are simply absent from the POST body
-    bool wasLandscape = landscapeMode();
-    bool wasFlip = cfg.flipScreen;
-    cfg.flipScreen = server.hasArg("flipScreen");
-    if (server.hasArg("orientation")) {
-      String o = server.arg("orientation");
-      if (o == "portrait" || o == "landscape") strlcpy(cfg.orientation, o.c_str(), sizeof(cfg.orientation));
-    }
-    // Touch calibration is orientation/flip specific - re-run the wizard on a change.
-    if (landscapeMode() != wasLandscape || cfg.flipScreen != wasFlip) {
+    uint8_t newRotation = cfg.rotation;
+    if (server.hasArg("rotation")) newRotation = (uint8_t)constrain(server.arg("rotation").toInt(), 0, 3);
+    if (newRotation != cfg.rotation) {
+      cfg.rotation = newRotation;
+      // Touch calibration is rotation-specific - re-run the wizard on a change.
       cfg.touchCalibrated = false;
       gTouchCalActive = true;
       gTouchCalFirstRun = false;
@@ -6018,7 +6088,7 @@ void setup() {
     setDefaultConfig();
     saveConfig();
   }
-  applyScreenRotation(); // now that cfg.flipScreen is known
+  applyScreenRotation(); // now that cfg.rotation is known
   applyTypeface();       // load the .vlw font (sans / mono)
   improvLoop();
   applyCornerStyle();

@@ -12,7 +12,7 @@
 // type the compiler hasn't seen yet. Including this header up top
 // guarantees the types exist before that auto-prototype block does.
 #define MAX_PAGES 8
-#define MAX_TILES 6 // grid only has 6 cells (2x3)
+#define MAX_TILES 6 // grid only has 6 cells (2x3 portrait, 3x2 landscape)
 
 struct TileConfig {
   char type[12];      // "light" | "switch" | "sensor" | "blank"
@@ -39,8 +39,8 @@ struct DeviceConfig {
   bool haLiveUpdates;  // experimental: hold a HA WebSocket for push state updates instead of polling
   bool darkTheme;
   bool use12Hour;
-  bool flipScreen;   // true = rotate the display 180 deg (USB port on the other side)
-  char orientation[10];  // "portrait" (default, 2x3 grid) | "landscape" (3x2 grid)
+  uint8_t rotation;  // TFT_eSPI rotation, 0-3 = 0/90/180/270 deg. 2 = shipped default
+                      // (portrait, USB at bottom); 1/3 = landscape (3x2 grid).
   char timezone[24];
   uint8_t uiFontSize;  // 0 = Small, 1 = Medium (default), 2 = Large
   char uiTypeface[16]; // theme axis: "sans" (Noto Sans) | "mono" (Plex Mono, UPPERCASE + rules)
@@ -144,4 +144,16 @@ enum WifiCredSource {
   WCS_NONE,    // no credentials anywhere - on-device setup takes over
   WCS_COMPILE, // baked in via include/secrets.h (source builds)
   WCS_STORED   // saved in NVS by the setup flow
+};
+
+// Status page layout - see statusLayout() in main.ino. Struct lives here
+// (not the .ino) for the same auto-prototype reason as the config structs
+// above: statusLayout() returns one, so the type must exist before the
+// auto-generated prototype block does.
+struct StatusLayout {
+  int rowKeyX, rowValX, rowValW, rowH, row0Y;
+  int darkX, darkY, darkW, darkH;
+  int rotX,  rotY,  rotW,  rotH;
+  int rebootX, rebootY, rebootW, rebootH;
+  int verY;
 };
