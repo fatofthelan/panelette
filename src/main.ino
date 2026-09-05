@@ -4752,9 +4752,9 @@ void handleConnectionPage() {
   {
     const char* pillCls = haConnState == HA_CONN_OK ? "ok"
                         : (haConnState == HA_CONN_AUTH_FAIL || haConnState == HA_CONN_UNREACHABLE) ? "bad" : "warn";
-    h += "<div style='margin-top:12px'>Connection: <span id='haStat' class='pill " + String(pillCls) + "'>" +
-         htmlEscape(haConnLabel(haConnState)) + "</span> ";
-    h += "<button type='button' onclick='haTest(this)'>Test</button></div>";
+    h += "<div style='margin-top:12px'>Connection: <button type='button' onclick='haTest(this)'>Test</button>";
+    h += "<span id='haStat' class='pill " + String(pillCls) + "' style='margin-left:10px'>" +
+         htmlEscape(haConnLabel(haConnState)) + "</span></div>";
     h += "<div class='muted' style='margin-top:4px'>Tests the <em>saved</em> URL and token - Save first if you just changed them. A successful save also imports your time zone and location from HA.</div>";
   }
   h += "<div class='check' style='margin-top:16px'><input type='checkbox' id='haLive' name='haLiveUpdates'" +
