@@ -3593,12 +3593,31 @@ void drawForecastPageFull() {
   tft.setTextColor(COL_DIM, COL_BG);
   uiDrawFitted(tft, String(cfg.weatherLocationName), 68, locY, SCREEN_W - 68 - 58, fontStatusRow());
 
+  // The degree ring belongs AFTER the number ("58°"), not before it - and
+  // it used to sit at SCREEN_W-8-curTempW-6, i.e. to the LEFT of the
+  // right-aligned number, computed from a curTempW that came from a raw
+  // tft.textWidth(curTemp, 4) call. That's exactly the "never call
+  // tft.textWidth()/tft.drawString() with a numbered font directly -
+  // always go through the ui* wrappers" trap documented in CLAUDE.md's
+  // Fonts section: at fontNum>=4 the ui* wrappers swap in the big .vlw
+  // cut for the call and reload the base afterward, but a raw
+  // tft.textWidth() call bypasses that swap, so it measured against
+  // whichever cut TFT_eSPI actually had loaded rather than the one
+  // uiDrawString() rendered "58" with - underestimating the true width
+  // and landing the ring inside the rendered digits instead of past them.
+  // Sidestepped entirely here rather than just fixed: anchor the ring and
+  // the number to the fixed right margin instead of to each other's
+  // measured width. The ring's own right edge lands exactly on that
+  // margin (so it lines up with the hi/lo text's right edge below it),
+  // and the number is drawn ending just to the ring's left - no width
+  // measurement involved at all.
   String curTemp = String((int)roundf(weatherCurrentTemp));
   tft.setTextDatum(TR_DATUM);
   tft.setTextColor(COL_TEXT, COL_BG);
-  int curTempW = tft.textWidth(curTemp, 4);
-  uiDrawString(tft, curTemp, SCREEN_W - 8, tempY, 4);
-  tft.drawSmoothCircle(SCREEN_W - 8 - curTempW - 6, tempY + 4, 2, COL_TEXT, COL_BG);
+  int ringR = 2, ringGap = 4;
+  int ringCenterX = SCREEN_W - 8 - ringR;
+  uiDrawString(tft, curTemp, ringCenterX - ringR - ringGap, tempY, 4);
+  tft.drawSmoothCircle(ringCenterX, tempY + 4, ringR, COL_TEXT, COL_BG);
 
   String hiLo = String((int)roundf(forecast[0].tempMax)) + "/" + String((int)roundf(forecast[0].tempMin));
   tft.setTextColor(COL_DIM, COL_BG);
